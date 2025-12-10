@@ -1,0 +1,176 @@
+const
+  {Raw commands for menu activity}
+  MKSNone = 0;               {Not a command}
+  MKSAlpha = 1;              {An alphanumeric character}
+  MKSUp = 2;                 {Cursor up}
+  MKSDown = 3;               {Cursor down}
+  MKSLeft = 6;               {Cursor left}
+  MKSRight = 7;              {Cursor right}
+  MKSExit = 8;               {Exit the menu}
+  MKSSelect = 9;             {Select the current item}
+  MKSHelp = 10;              {Provide help about current item}
+  MKSHome = 11;              {Cursor to first menu item}
+  MKSEnd = 12;               {Cursor to last menu item}
+  MKSProbe = 13;             {Attempt to select item with mouse}
+  MKSUser0 = 14;             {User-defined exit commands}
+  MKSUser1 = 15;
+  MKSUser2 = 16;
+  MKSUser3 = 17;
+
+  LotusFrame = #255#255#255#255#255#255; {Tag denotes unframed submenus}
+  NoFrame = LotusFrame;      {Synonym for LotusFrame}
+
+  NoHelp = 0;                {Help row to skip help altogether}
+  HideCursor : Boolean = True; {False to leave hardware cursor on while menus displayed}
+
+  FrameDelta : array[Boolean] of Byte = (1, 0);
+  ShadowDelta : array[Boolean] of Byte = (0, 1);
+
+  {.F-}
+  {Keystroke to command mapping}
+  MenuKeyMax = 89;
+  MenuKeyID : string[16] = 'tpmenu key array';
+  MenuKeySet : array[0..MenuKeyMax] of Byte =
+  (
+  3, $00, $48, MKSUp,       {Up}
+  3, $00, $50, MKSDown,     {Down}
+  3, $00, $4B, MKSLeft,     {Left}
+  3, $00, $4D, MKSRight,    {Right}
+  3, $00, $3B, MKSHelp,     {F1}
+  3, $00, $47, MKSHome,     {Home}
+  3, $00, $4F, MKSEnd,      {End}
+  2, $05,      MKSUp,       {^E}
+  2, $17,      MKSUp,       {^W}
+  2, $18,      MKSDown,     {^X}
+  2, $1A,      MKSDown,     {^Z}
+  2, $13,      MKSLeft,     {^S}
+  2, $04,      MKSRight,    {^D}
+  2, $1B,      MKSExit,     {Esc}
+  2, $0D,      MKSSelect,   {Enter}
+  3, $11, $12, MKSHome,     {^QR}
+  3, $11, $03, MKSEnd,      {^QC}
+  {$IFDEF UseMouse}
+  3, $00, $EF, MKSProbe,    {Click left}
+  3, $00, $EE, MKSExit,     {Click right}
+  3, $00, $ED, MKSHelp,     {Click both}
+  {$ELSE}
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0,
+  {$ENDIF}
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0          {Space for customization}
+  );
+  {.F+}
+
+  MenuItemProc : Pointer = nil;  {If not nil, called each time select bar moves}
+
+  AllowPendingSubMenus : Boolean = False;
+  SelectOnFirstMouseClick : Boolean = True; {!!.08}
+
+type
+  MKType = MKSNone..MKSUser3;
+
+  MenuStatusType =           {Status of a menu operation}
+  (MenuSuccess,              {Operation successful}
+    MenuNoMem,               {Insufficient memory}
+    MenuFileNotFound,        {Menu library file not found}
+    MenuNotLibraryFile,      {File is not a library file}
+    MenuIdNotFound,          {Specified library element not found}
+    MenuFileReadError,       {Error while reading menu file}
+    MenuFileWriteError,      {Error while writing menu file}
+    MenuFileCreationError,   {Unable to create library file}
+    MenuFileCorrupt,         {Menu file is corrupt}
+    MenuLibraryFull          {No room in library index to add a new entry}
+    );
+
+  MenuCharSet = set of Char; {User-defined keys to exit menu selection}
+
+  MenuKey = LongInt;         {What a menu selection returns as identification}
+
+  Orientation =              {Which direction scrolling proceeds}
+  (Vertical, Horizontal, NoOrient);
+
+  MenuColorType =            {Colors used by the menu system}
+  (FrameColor,               {Color used for menu frames}
+    HeaderColor,             {Color used for header string within frame}
+    BodyColor,               {Color used for body of menu}
+    SelectColor,             {Color used for the selected item}
+    HiliteColor,             {Color used for the pick character of each item}
+    HelpColor                {Color used for help row, if any}
+    {$IFDEF Tpro5Menu}
+    ,
+    DisabledColor,           {Color used for temporarily disabled items}
+    ShadowColor              {Color used for menu shadows}
+    {$ENDIF}
+    );
+  MenuColorArray = array[MenuColorType] of Byte;
+
+  Menu = ^MenuRec;
+  ItemP = ^ItemRec;
+  SubMenuP = ^SubMenuRec;
+  MenuStackP = ^MenuStackRec;
+
+  ItemRec =                  {28 bytes+name+help}
+    record
+      DisplayPos : Byte;     {Offset from top left corner of menu for display}
+      SelectPos : Byte;      {Byte in string to highlight and cause selection, 0 for none}
+      Key : MenuKey;         {Key returned when item is selected}
+      Name : Pointer;        {Pointer to string to display for item}
+      Help : Pointer;        {Pointer to string to display for item help}
+      Next : ItemP;          {Pointer to next item in list}
+      Prev : ItemP;          {Pointer to previous item in list}
+      Sub : SubMenuP;        {Pointer to submenu, nil if none}
+      OnHeap : Boolean;      {True if name/help is allocated on heap}
+      {$IFDEF Tpro5Menu}
+      Enabled : Boolean;     {True if item may be selected by user}
+      {$ENDIF}
+    end;
+
+  ItemList =
+    record                   {12 bytes}
+      First : ItemP;         {First item in menu}
+      Last : ItemP;          {Last item in menu}
+      Current : ItemP;       {Current item in menu}
+    end;
+
+  SubMenuRec =               {44 bytes+header+screen buffers}
+    record
+      XL, YL : Byte;         {Upper left corner of window frame}
+      XH, YH : Byte;         {Actual bottom right corner of window frame}
+      YHelp : Byte;          {Row where a help line starts}
+      Orient : Orientation;  {Horizontal or vertical scroll}
+      Frame : FrameArray;    {Characters for frame}
+      Colors : MenuColorArray; {Colors for parts of menu}
+
+      LotusStyle : Boolean;  {True for menus without frames, ala Lotus}
+      Header : Pointer;      {Title string for frame}
+      Items : ItemList;      {Linked list of entries}
+      HelpCovers : BufP;     {Points to buffer for screen covered by help}
+
+      Draw : WinDrawRec;     {Hook into TPWINDOW}
+    end;
+
+  MenuStackRec =
+    record                   {8 bytes}
+      Top : SubMenuP;        {Points to active submenu}
+      Next : MenuStackP;     {Remainder of the stack}
+    end;
+
+  MenuRec =
+    record                   {50 bytes}
+      Root : SubMenuP;       {Root of menu}
+      Active : SubMenuP;     {Currently active submenu}
+      Stack : MenuStackP;    {Points to stack of active menus}
+      UserFunc : Pointer;    {Points to user-supplied function}
+      SelectKeys : MenuCharSet; {User-defined keys to perform selection}
+      Visible : Boolean;     {True when menus are onscreen}
+      SubPending : Boolean;  {True when submenu will pop down automatically}
+    end;
+
+var
+  MenuGetKeyPtr : Pointer;   {User defined keyboard function}
+  MenuHelpPtr : Pointer;     {If not nil, routine is called when help key pressed}
+  MenuCmdNum : MKType;       {Last menu command entered}
+  {$IFDEF UseMouse}
+  MenuMouseEnabled : Boolean; {True if mouse is enabled}
+  {$ENDIF}

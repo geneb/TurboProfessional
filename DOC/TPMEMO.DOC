@@ -1,0 +1,864 @@
+TPMEMO - Memo field editor for Turbo Professional
+-------------------------------------------------
+Version 5.21
+Copyright (c) 1988, 1992 by TurboPower Software
+
+Overview
+---------------------------------------------------------------------
+
+TPMEMO is a unit containing a simple text editor that can be used in
+programs written with Turbo Professional. We envision two primary
+uses for TPMEMO:
+
+First, it can be used in conjunction with TPENTRY for editing 'memo
+fields' in database records. For a demonstration of how to use TPMEMO
+for this purpose, see ENTRY.PAS, discussed below in the section on
+Example Programs.
+
+Second, TPMEMO can be used for editing text files. In this respect and
+others, TPMEMO is quite similar to Borland's Binary Editor (BINED),
+part of the Turbo Pascal Editor Toolbox. But there is one important
+feature in TPMEMO that is lacking in the Binary Editor: word wrap. In
+fact, one of our main goals in writing TPMEMO was to provide an
+alternative to BINED in cases where word wrap was essential. For an
+example of how to use TPMEMO for this purpose, see MEMO.PAS, discussed
+below in the section on Example Programs. The two other noteworthy
+advantages of TPMEMO over BINED are 1) built-in mouse support and 2)
+complete source code. The one major disadvantage of TPMEMO is that it
+does not implement any of the block manipulation commands found in
+BINED.
+
+The sections that follow describe the various facilities in TPMEMO.
+None of these sections provides working examples of how to use these
+routines. For that you should look to ENTRY.PAS and MEMO.PAS.
+
+Terminology
+---------------------------------------------------------------------
+
+Before going any further, there are a few terms we need to define:
+
+An 'edit window' is a region of the screen used to display text being
+edited with TPMEMO.
+
+An 'edit buffer' is a data structure, usually an array of char, used
+to store the text being edited. The end of an edit buffer is always
+signalled by a ^Z (end of file) character. The end of each line of
+text within the edit buffer is signalled by a carriage return-line
+feed combination (^M^J). An 'empty' edit buffer should always be
+marked by a lone ^Z at the beginning of the buffer.
+
+An 'editor control block' is a record variable used to store
+information about an edit window and the edit buffer associated with
+it, as well as a variety of status and housekeeping variables. See the
+entry for EMcontrolBlock in the next section for details on what an
+editor control block contains.
+
+Routines in TPMEMO
+---------------------------------------------------------------------
+
+This section covers the types, constants, and routines interfaced by
+TPMEMO.
+
+Constants
+
+  AllowTruncation : Boolean = True;
+
+  This boolean constant determines whether or not ReadMemoFile will
+  read in a partial file in cases where the file is larger than the
+  edit buffer.
+
+  DeleteJoinsLines : Boolean = False;
+
+  If this constant is True, pressing <Del> when beyond the cursor is
+  beyond the end of the current line will pull up the following line,
+  just as the delete word command (<CtrlT>) does. (This constant was
+  added in version 5.06.)
+
+  DisallowedInReadOnlyMode : set of EMtype =
+    [EMchar..EMenter, EMrestore, EMback..EMreformatG];
+
+  The commands in this set are disallowed in read-only mode. It is
+  interfaced in case you need to add any user-defined commands to the
+  set.
+
+  EMnone       = 00; {Not a command}
+  ...
+  EMuser19     = 52;
+
+  Each of these constants corresponds to an editing, cursor movement,
+  or exit command implemented by TPMEMO. See the section on Editing
+  Commands, below, for a discussion of these commands.
+
+  ErrorRow : Byte = 1;      {default to top line of screen for error
+                             messages}
+  ErrorAttr : Byte = $F;    {attribute for error message line}
+
+  These constants determine which row MemoError uses to display error
+  messages, and which video attribute they are displayed in. They are
+  not used unless you have enabled MemoError with the statement
+  'MemoErrorPtr := @MemoError;'.
+
+  HelpForMemo = HelpForXXXX1;
+
+  This constant represents the special code passed to a help routine
+  to indicate which unit the request for help came from. See the
+  section on Programming Hooks, below.
+
+  IndentStartsParagraph : Boolean = False;
+
+  If this constant is True, TPMEMO's paragraph reformatting routine
+  treats a blank space at the beginning of a line as signalling the
+  start of a new paragraph and hence the end of the previous one. If
+  it is False, the end of a paragraph is signalled by a blank line.
+
+  MaxLineLength : Byte = 127;
+
+  The maximum length of a line of text. This typed constant can be
+  made smaller, but under no circumstances should it be made larger.
+  (The word wrap routine needs to be able to store two complete lines
+  of text in a single string variable.)
+
+  MemoErrorPtr : Pointer = nil;
+
+  If not nil, this variable points to a routine that will be called
+  each time an error occurs. See the section on Programming Hooks,
+  below.
+
+  MemoHelpPtr : Pointer = nil;
+
+  This variable points to a routine that will display help when <F1>
+  is pressed. If it is nil, pressing <F1> does nothing. See the
+  section on Programming Hooks, below.
+
+  MemoKeyMax = 250;
+  MemoKeyID : string[16] = 'tpmemo key array';
+  MemoKeySet : array[0..MemoKeyMax] of Byte = (...);
+
+  MemoKeySet contains the default key assignments for all the
+  commands. See the section on Programming Hooks, below.
+
+  MemoKeyPtr : Pointer = nil;
+
+  This variable points to a routine that will return the next
+  keystroke. By default it points to either TpMouse.ReadKeyOrButton
+  (if mouse support is enabled) or TpCrt.ReadKeyWord (if it isn't).
+  See the section on Programming Hooks, below.
+
+  {$IFDEF UseMouse}
+  MemoMouseEnabled : Boolean = False;
+  {$ENDIF}
+
+  This typed constant will be True if mouse support has been enabled
+  by a call to EnableMemoMouse.
+
+  MemoStatusPtr : Pointer = nil;
+
+  If not nil, this variable points to a routine that will be called at
+  each keystroke. Normally this routine will display a status line.
+  See the section on Programming Hooks, below.
+
+  StatusRow : Byte = 2;      {default to second line of screen for
+                              status line}
+  StatusAttr : Byte = $F;    {attribute for status line}
+
+  These constants determine which row MemoStatus uses to display a
+  status line, and which video attribute the status line is displayed
+  in. They are not used unless you have enabled MemoStatus with the
+  statement 'MemoStatusPtr := @MemoStatus;'.
+
+  tmBufferFull    = 1;       {edit buffer is full}
+  tmLineTooLong   = 2;       {line too long, CRLF inserted}
+  tmTooManyLines  = 3;       {max line limit has been reached}
+  tmOverLineLimit = 4;       {max line limit has been exceeded}
+
+  These constants represent the possible error message codes passed to
+  a user-written error handler. See the section on Programming Hooks,
+  below.
+
+Types
+
+  EMbuffer = array[1..65521] of Char;
+  EMcontrolBlock =           {an editor control block}
+    record
+      UserData : Pointer;    {reserved for user (ID number perhaps)}
+      XL, YL, XH, YH : Byte; {coordinates for edit window}
+      BufPtr : ^EMbuffer;    {pointer to text buffer}
+      BufSize : Word;        {size of buffer}
+      MaxLines : Integer;    {maximum number of lines}
+      TotalBytes : Word;     {bytes in buffer}
+      TotalLines : Integer;  {lines in buffer}
+      LineAtTop : Integer;   {line at top of edit window}
+      BufPosTop : Word;      {index into buffer for start of line
+                              at top}
+      CurLine : Integer;     {line number of current line}
+      BufPos : Word;         {index into buffer for start of current
+                              line}
+      CurCol : Byte;         {position of cursor within current line}
+      ColDelta : Byte;       {for horizontal scrolling}
+      KnownLine : Integer;   {used to speed up scrolling/searching}
+      KnownOfs : Word;       {"    "  "     "  "}
+      TAttr : Byte;          {attribute for normal text}
+      CAttr : Byte;          {attribute for control characters}
+      InsertMode : Boolean;  {True if in insert mode}
+      IndentMode : Boolean;  {True if in auto-indent mode}
+      WordWrap : Boolean;    {True if word wrap is on}
+      Modified : Boolean;    {True if edits have been made}
+      TabDelta : Byte;       {distance between tab stops}
+      Margin : Byte;         {right margin}
+      HelpTopic : Word;      {help topic}
+     end;
+
+  Variables of this type are used to store information about a text
+  editing window and its associated buffer.
+
+  EMtype = EMnone..EMuser19;
+
+  A variable of this type is generally used to store the result of a
+  call to EditMemo, which always returns a value in the range
+  EMnone..EMuser19.
+
+  MemoStatusType = (
+    mstOK, mstNotFound, mstInvalidName, mstReadError, mstTooLarge,
+    mstTruncated, mstCreationError, mstWriteError, mstCloseError);
+
+  ReadMemoFile and SaveMemoFile both return a function result of this
+  type. mstOK indicates that no error occurred. mstNotFound is
+  returned by ReadMemoFile if the specified file does not exist. It is
+  not an error code; it simply indicates that the user wants to edit a
+  file that does not yet exist. mstInvalidName is returned by
+  ReadMemoFile if the drive and/or directory in the specified filename
+  is invalid. mstReadError is returned by ReadMemoFile if an error
+  occurred while reading in the text file. mstTooLarge is returned by
+  ReadMemoFile if the file to be read is larger than the edit buffer
+  and AllowTruncation is False; if AllowTruncation is True, as it is
+  by default, mstTruncated is returned instead. mstCreationError is
+  returned by SaveMemoFile if it is unable to create the specified
+  file (because the disk is full or is write-protected, for example).
+  mstWriteError is returned by SaveMemoFile if an error occurs while
+  writing the contents of the edit buffer to disk. mstCloseError
+  indicates that an error occurred while attempting to close a file.
+
+Procedures and Functions
+
+Declaration
+  function AddMemoCommand(Cmd : EMtype; NumKeys : Byte;
+                          Key1, Key2 : Word) : Boolean;
+Purpose
+  Add a new command key assignment or change an existing one.
+Comments
+  This routine can be used to assign a user-defined command to a key
+  combination, to disable an existing command, or to change a key
+  assignment. See MEMO.PAS for examples of how to use this routine.
+  For a general discussion of how to use a function of this type, see
+  pages 14-7 and 14-8 of the Turbo Professional manual.
+
+Declaration
+  procedure DisableMemoMouse;
+Purpose
+  Disable mouse support in TPMEMO.
+Comments
+  This routine disables mouse support in TPMEMO. Note that this
+  routine will not be included in TPMEMO unless UseMouse is defined.
+
+Declaration
+  function EditMemo(var EMCB : EMcontrolBlock;
+                    ReadOnly : Boolean;
+                    var CmdList) : EMtype;
+Purpose
+  Edit a buffer filled with text.
+Comments
+  The main routine in TPMEMO, EditMemo is the procedure which
+  processes all editing and cursor movement commands. On exit it
+  returns a code indicating which command was used to exit the editor
+  (usually EMquit, but possibly a user-defined command).
+
+  EMCB is a variable containing all pertinent information about an
+  edit window and the text buffer associated with it. It must have
+  been initialized previously by a call to InitControlBlock.
+
+  ReadOnly is used to select read-only mode, in which only
+  non-destructive commands are processed. Although this option allows
+  TPMEMO to be used as a file browser, the primary reason for
+  providing it is to complement the read-only mode in TPENTRY.
+
+  Though untyped, CmdList should generally be a variable of the form
+
+    MyCmdList : array[1..n] of EMtype;
+
+  This array contains a list of commands to be processed by EditMemo
+  immediately upon entry to the editor. For example, if you wanted to
+  simulate the pressing of <Ctrl PgDn>, you could pass the following
+  variable as the CmdList parameter:
+
+    MyCmdList : array[1..2] of EMtype = (EMendOfFile, EMnone);
+
+  The EMendOfFile command would tell EditMemo to move the cursor to
+  the end of the file. The EMnone command signals the end of the list
+  of commands and tells EditMemo to resume processing commands entered
+  at the keyboard.
+
+  In some cases you may find it necessary to pass text as well as
+  commands. To do so, you would simply pass a data structure
+  containing the characters to be entered, surrounded by the value
+  EMchar. For example:
+
+    MyCmdList : array[1..n] of Char =
+      (Char(EMchar), 'h', 'e', 'l', 'l', 'o',
+       Char(EMchar), Char(EMnone));
+
+  If you passed this typed constant as the CmdList parameter, the word
+  'hello' would be inserted into the text buffer. The first EMchar
+  signals the start of a series of characters to be entered into the
+  text buffer. The second EMchar signals the end of the series. And
+  the final EMnone signals the last command in the list. (Note that,
+  if you are using Turbo Pascal 4.0, you would need to change
+  'Char(EMchar)' to '#1' and 'Char(EMnone)' to #0 in the example
+  above.) When using this facility, please do not try to pass control
+  characters as part of a sequence of text.
+
+  Two final notes about this routine. First, EditMemo does not 'home
+  the cursor' on entry. If an exit command is given and you call
+  EditMemo again without calling InitControlBlock first, the cursor
+  will remain where it was before the exit command was given. Although
+  this behavior may be undesirable in some cases, it is necessary to
+  allow certain kinds of user-defined commands to be implemented.
+  Second, EditMemo does not preserve and restore the contents of the
+  screen beneath the edit window. It is up to you to do so if
+  necessary.
+Example
+  var
+    MyEMCB : EMCB;
+  const
+    MyCmdList : EMtype = EMnone;
+  begin
+    InitControlBlock(MyEMCB, ...);
+    ...
+    ExitCommand := EditMemo(MyEMCB, MyCmdList);
+  end;
+
+  Edit the text buffer associated with MyEMCB. No special edit
+  commands are to be executed on entry to the editor. See MEMO.PAS and
+  ENTRY.PAS for better examples of how to use EditMemo.
+See Also
+  InitControlBlock (TPMEMO)
+
+Declaration
+  procedure EnableMemoMouse;
+Purpose
+  Enable mouse support in TPMEMO.
+Comments
+  This routine enables mouse support in TPMEMO. Note that this routine
+  will not be included in TPMEMO unless UseMouse is defined.
+
+Declaration
+  procedure InitControlBlock(var EMCB : EMcontrolBlock;
+                             XLow, YLow, XHigh, YHigh : Byte;
+                             TextAttr, CtrlAttr : Byte;
+                             InsertOn, IndentOn, WordWrapOn : Boolean;
+                             TabSize : Byte; HelpIndex : Word;
+                             RightMargin : Byte; LineLimit : Integer;
+                             BufferSize : Word; var Buffer);
+Purpose
+  Initialize a memo editor control block.
+Comments
+  This routine initializes an 'editor control block', a variable which
+  contains all pertinent information about an edit window.
+
+  EMCB is the control block to be initialized. XLow, YLow, XHigh, and
+  YHigh give the coordinates for the edit window. TextAttr is the
+  video attribute in which normal text is to be displayed. CtrlAttr is
+  the video attribute used to display control characters; if it is the
+  same as TextAttr, the command that allows control characters to be
+  entered (EMctrlChar, normally assigned to <Ctrl P>) is disabled.
+  InsertOn indicates whether or not insert mode should be On by
+  default. IndentOn indicates whether or not auto-indent mode should
+  be On by default. WordWrapOn indicates whether word wrap should be
+  enabled by default. TabSize specifies the distance between tab
+  stops. HelpIndex is the value that should be passed to a help
+  routine when <F1> is pressed. RightMargin indicates the column at
+  which word wrap should occur. LineLimit indicates the maximum number
+  of lines that the user may enter. Buffer is the edit buffer to be
+  associated with EMCB, and BufferSize indicates its size.
+
+  InitControlBlock does three things. First, it intializes EMCB with
+  the values specified by XLow and the other parameters. Second, it
+  scans the contents of the edit buffer to determine how many bytes
+  are in it and how many lines of text it contains. (The end of a line
+  is signalled by a carriage return-line feed combination; the end of
+  the edit buffer by a ^Z.) Third, it resets a few 'housekeeping'
+  variables that are used internally to keep track of the cursor, the
+  current line, etc.
+
+  See MEMO.PAS and ENTRY.PAS for examples.
+
+Declaration
+  procedure MemoError(var EMCB : EMcontrolBlock; ErrorCode : Word);
+Purpose
+  Display error message and wait for key press.
+Comments
+  This routine provides a 'default' error handler for TPMEMO. You can
+  use it as is, or use it as a model for writing your own error
+  handler. MemoError displays error messages on the row indicated by
+  ErrorRow in the video attribute indicated by ErrorAttr.
+Example
+  ErrorRow := 1;
+  ErrorAttr := $F;
+  MemoErrorPtr := @MemoError;
+
+  Enables MemoError and requests that error messages be displayed on
+  row 1 in white on black.
+
+Declaration
+  procedure MemoStatus(var EMCB : EMcontrolBlock);
+Purpose
+  Display a status line.
+Comments
+  This routine provides a 'default' status display routine for TPMEMO.
+  You can use it as is, or use it as a model for writing your own
+  status display routine. MemoStatus displays its status line on the
+  row indicated by StatusRow in the video attribute indicated by
+  StatusAttr.
+Example
+  StatusRow := 2;
+  StatusAttr := $F;
+  MemoStatusPtr := @MemoStatus;
+
+  Enables MemoStatus and requests that the status line be displayed on
+  row 2 in white on black.
+
+Declaration
+  function ReadMemoFile(var Buffer; BufferSize : Word;
+                        FName : string; var FSize : LongInt)
+    : MemoStatusType;
+Purpose
+  Read a file into Buffer, returning a status code.
+Comments
+  This routine reads a text file, FName, into a Buffer of BufferSize
+  bytes. Upon return, FSize will have the size of FName, if it was
+  found, and the function result will indicate whether or not the
+  operation was successful.
+Example
+  MemoStatus :=
+    ReadMemoFile(MyEditBuffer^, MyBufferSize,
+                 'C:\AUTOEXEC.BAT', FSize);
+
+  Read C:\AUTOEXEC.BAT into the buffer pointed to by MyEditBuffer.
+  MyBufferSize has the size of the edit buffer. On return, FSize has
+  the size of the file being edited, if found.
+
+Declaration
+  function SaveMemoFile(var EMCB : EMcontrolBlock; FName : string;
+                        MakeBackup : Boolean) : MemoStatusType;
+Purpose
+  Save the current file in the text buffer associated with EMCB.
+Comments
+  This routine saves the contents of the edit buffer associated with
+  EMCB in the text file designated by FName. If FName already exists
+  and MakeBackup is True, the existing FName will be renamed to
+  FName.BAK before the new file is created. Upon return, the function
+  result will indicate whether or not the operation was successful.
+Example
+  MemoStatus := SaveMemoFile(MyEMCB, MyFileName, True);
+
+  Save the contents of the edit buffer associated with MyEMCB in
+  MyFileName, and make a backup file if appropriate.
+
+The following routines are intended primarily for internal use, but
+they have been interfaced in case you need them in order to implement
+user-defined commands or for other purposes. These routines are not
+fully documented, so if you want to use one of them you will need to
+study the source code for TPMEMO.
+
+  function FindLineIndex(var EMCB : EMcontrolBlock;
+                         LineNum : Integer) : Word;
+    {-Return the index into the edit buffer for the specified line
+      number. LineNum must be <= EMCB.TotalLines.}
+
+  function FindLineLength(var EMCB : EMcontrolBlock;
+                          LineNum : Integer) : Word;
+    {-Find the length of the specified line}
+
+  procedure InitBufferState(var EMCB : EMcontrolBlock;
+                            BufferSize : Word; var Buffer);
+    {-Initialize the edit buffer status fields in a control block}
+
+  procedure GetLine(var EMCB : EMcontrolBlock;
+                    var S : string; LineNum : Integer);
+    {-Get the LineNum'th line from the buffer for the specified
+      control block and store it in S. If line is longer than 255
+      characters, only the first 255 characters will be loaded into
+      S.}
+
+  procedure DrawLine(var EMCB : EMcontrolBlock;
+                     St : String; LineNum : Integer);
+    {-Draw the string St, which represents the specified line number}
+
+  procedure FastWriteCtrl(St : String; Row, Col, Attr, Ctrl : Byte);
+    {-Write St at Row,Col in Attr (video attribute) without snow.
+      Control characters displayed in Ctrl as upper-case letters}
+
+Editing Commands
+---------------------------------------------------------------------
+
+TPMEMO offers a fairly complete set of basic editing commands. The
+available commands are listed below. In each case the first line gives
+the name of the command, in TPMEMO's terms, followed by the key(s) to
+which it is normally assigned. The second and following lines give a
+brief description of the command.
+
+   EMleft        <Left>, <CtrlS>
+   Cursor left one character.
+
+   EMright       <Right>, <CtrlD>
+   Cursor right one character.
+
+   EMwordLeft    <CtrlLeft>, <CtrlA>
+   Cursor left one word. If the cursor is at the beginning of a line,
+   it is moved to the end of the previous line.
+
+   EMwordRight   <CtrlRight>, <CtrlF>
+   Cursor right one word. If the cursor is at the end of a line, it is
+   moved to the beginning of the following line.
+
+   EMhome        <Home>, <CtrlQ><S>
+   Cursor to beginning of line.
+
+   EMend         <End>, <CtrlQ><D>
+   Cursor to end of line.
+
+   EMup          <Up>, <CtrlE>
+   Cursor up one line.
+
+   EMdown        <Down>, <CtrlX>
+   Cursor down one line.
+
+   EMscrollUp    <CtrlW>
+   Scroll display up one line.
+
+   EMscrollDown  <CtrlZ>
+   Scroll display down one line.
+
+   EMpageUp      <PgUp>, <CtrlR>
+   Scroll display up one page.
+
+   EMpageDown    <PgDn>, <CtrlC>
+   Scroll display down one page.
+
+   EMscreenTop   <CtrlHome>, <CtrlQ><E>
+   Move cursor to top of edit window.
+
+   EMscreenBot   <CtrlEnd>, <CtrlQ><X>
+   Move cursor to bottom of edit window.
+
+   EMtopOfFile   <CtrlPgUp>, <CtrlQ><R>
+   Move cursor to beginning of file.
+
+   EMendOfFile   <CtrlPgDn>, <CtrlQ><C>
+   Move cursor to end of file.
+
+   EMdel         <Del>, <CtrlG>
+   Delete character at cursor.
+
+   EMback        <Bksp>, <CtrlH>, <CtrlBksp>
+   Delete character to left of cursor. If the cursor is at the
+   beginning of a line, the line will be joined with the previous
+   line.
+
+   EMdelLine     <CtrlY>
+   Delete current line.
+
+   EMdelEol      <CtrlQ><Y>
+   Delete from cursor to end of line.
+
+   EMdelWord     <CtrlT>
+   Delete word to right of cursor. If the cursor is at end of a line,
+   the following line is joined with the current line.
+
+   EMenter       <Enter>, <CtrlM>
+   Start a new line.
+
+   EMtab         <Tab>, <CtrlI>
+   Move the cursor to the next tab stop. If insert mode is on, any
+   text to the right of the cursor is moved to the right of the tab
+   stop.
+
+   EMctrlChar    <CtrlP>
+   Insert control character. For example, to insert a ^G, you would
+   enter <CtrlP><CtrlG>. This command is available only if the video
+   attribute for control characters is different than that for normal
+   characters. Control characters are displayed as uppercase
+   alphabetics (^G is displayed as 'G', for example) in the specified
+   attribute.
+
+   EMins         <Ins>, <CtrlV>
+   Toggle insert mode on and off. A fat cursor indicates insert mode;
+   a thin cursor indicates overtype mode.
+
+   EMindent      <CtrlO><I>
+   Toggle auto-indent mode on or off. In auto-indent mode, pressing
+   <Enter> while in insert mode will cause the new line inserted to
+   have the same indentation level as the previous line. Auto-indent
+   mode also affects the way that text is formatted when word wrap
+   occurs--the new line will have the same indentation level as the
+   previous line--and hence the behavior of the reformatting commands
+   (<CtrlB> and <AltR>).
+
+   EMwordWrap    <CtrlO><W>
+   Toggle word wrap on and off. When word wrap is on, any attempt to
+   insert or append text beyond the right margin will cause a new line
+   to be inserted following the current line and all words that are at
+   least partially beyond the right margin to be moved to the new
+   line.
+
+   EMreformatP   <CtrlB>
+   Reformat the current paragraph.
+
+   EMreformatG   <AltR>
+   Reformat the entire file. Use this command with caution.
+
+   EMrestore     <CtrlQ><L>
+   Restore original contents of the current line.
+
+   EMhelp        <F1>, <ClickBoth>
+   Help. If a user-written help routine has been established by
+   setting MemoHelpPtr to a value other than nil, pressing <F1> will
+   call that routine; otherwise this command does nothing.
+
+   EMquit        <Esc>, <CtrlBreak>, <ClickRight>
+   Quit editing.
+
+   EMmouse       <ClickLeft>
+   Move the cursor to the position indicated by the mouse.
+
+In addition to the commands described above, TPMEMO has made
+provisions for up to 20 user-defined commands (EMuser0..EMuser19). See
+the section on Programming Hooks, below, for details.
+
+Programming Hooks
+---------------------------------------------------------------------
+
+TPMEMO implements many of the same kinds of hooks as TPEDIT, TPENTRY,
+and several of the other Turbo Professional units do. (See Appendix C
+of the Turbo Professional manual.) These hooks are:
+
+  MemoKeyPtr
+  ----------
+  This variable points to the routine used to obtain keyboard input.
+  See pages 14-11 and 14-12 of the Turbo Professional manual for
+  details on how to use a pointer variable of this type.
+
+  MemoHelpPtr
+  -----------
+  This variable points to the routine to be called when a request for
+  help is issued by the user. See pages 14-13 through 14-15 of the
+  Turbo Professional manual for details on how to use a pointer
+  variable of this type. TPMEMO passes three parameters to the help
+  routine:
+
+    UnitCode   : HelpForMemo (a constant in TPMEMO)
+    IDptr      : the address of the current editor control block
+    HelpIndex  : the help index associated with the current control
+                 block
+
+  It is imperative that a help routine be declared FAR and that it not
+  be nested inside another procedure.
+
+  MemoKeyMax, MemoKeyID, and MemoKeySet
+  -------------------------------------
+  These constants together provide an 'installable keyboard hook', as
+  defined on pages 14-6 through 14-10 of the Turbo Professional
+  manual. The AddMemoCommand routine mentioned above is analogous to
+  the AddEditCommand routine documented on page 14-7 and 14-8. As
+  indicated earlier, TPMEMO sets aside space for up to 20 user-defined
+  commands (EMuser0..EMuser19).
+
+TPMEMO also provides a couple of hooks for which there is no real
+counterpart in any of the standard Turbo Professional units. These
+hooks are:
+
+  MemoErrorPtr
+  ------------
+  This variable points to a routine that will display error messages
+  when an error occurs. It must be of the form:
+
+    {$F+}
+    procedure ErrorRoutine(var EMCB : EMcontrolBlock;
+                           ErrorCode : Word);
+    begin
+    end;
+    {$F-}
+
+  The EMCB parameter is the current editor control block. ErrorCode
+  indicates the type of error that occurred. The four possible values
+  are:
+
+    tmBufferFull    = 1;       {edit buffer is full}
+    tmLineTooLong   = 2;       {line too long, CRLF inserted}
+    tmTooManyLines  = 3;       {max line limit exceeded}
+    tmOverLineLimit = 4;       {max line limit already exceeded}
+
+  For an example of an error routine, see the MemoError procedure in
+  TPMEMO.PAS. It is imperative that an error routine be declared FAR
+  and that it not be nested inside another procedure.
+
+  MemoStatusPtr
+  -------------
+  This variable points to a routine that will display status
+  information while editing is taking place. It must be of the form:
+
+    {$F+}
+    procedure StatusRoutine(var EMCB : EMcontrolBlock);
+    begin
+    end;
+    {$F-}
+
+  The one parameter passed to a status routine is the current editor
+  control block. For an example of a status routine, see the
+  MemoStatus procedure in TPMEMO.PAS. It is imperative that a status
+  routine be declared FAR and that it not be nested inside another
+  procedure.
+
+  UserData field in an EMcontrolBlock
+  -----------------------------------
+  The first field in a variable of type EMcontrolBlock is a pointer
+  called 'UserData'. This space is set aside for you to use as you see
+  fit. You could use it to store a pointer to a filename or a related
+  data structure, or you might typecast the pointer to a longint and
+  use it to store an ID number (this might be useful if you have
+  multiple editing windows open or multiple memo fields in a database
+  record):
+
+     var
+       EMCB : EMcontrolBlock;
+     begin
+       LongInt(EMCB.UserData) := 1;
+       InitControlBlock(EMCB, ...);
+     end;
+
+  No routine in TPMEMO ever uses this field. It is provided strictly
+  for your convenience in cases where you need it.
+
+Compiling TPMEMO
+---------------------------------------------------------------------
+
+Like many of the units in Turbo Professional, TPMEMO contains
+several conditional compilation directives that affect the size and
+capabilities of the unit. At present, TPMEMO depends on only a single
+conditional define in TPDEFINE.INC, 'UseMouse'. If UseMouse is
+defined, TPMEMO can use the mouse handling routines in TPMOUSE to
+provide built-in mouse support. (Note that you must call
+EnableMemoMouse in order to actually enable mouse support.) If you
+don't need mouse support, you should undefine UseMouse in TPDEFINE.INC
+before compiling TPMEMO.
+
+Example Programs
+---------------------------------------------------------------------
+
+Two programs demonstrate the use of TPMEMO, ENTRY.PAS and MEMO.PAS.
+Together, these programs provide an ample demonstration of what can be
+done with TPMEMO.
+
+The copy of ENTRY provided here is essentially the same as the program
+described in the Turbo Professional manual. The only significant
+change is that the Notes field can now contain up to 2K of notes, not
+just 255 characters. To see TPMEMO in action, load ENTRY, move the
+cursor to the Notes field and press <Enter>. To get help concerning
+the use of the memo editor from within ENTRY, press <F1>.
+
+MEMO.PAS is a simple text editor based on TPMEMO. To use it, enter
+
+   MEMO filename
+
+where filename is the name of the file to be entered. In addition to
+the editing commands described above, MEMO implements three
+user-defined commands:
+
+   EMuser0       <CtrlK><S>, <F2>
+   Save file and continue editing.
+
+   EMuser1       <CtrlK><X>, <Ctrl F2>
+   Save file and exit.
+
+   EMuser2       <CtrlK><Q>, <Alt F2>
+   Abandon file. If the file has been modified, you will be asked to
+   confirm that you want to quit without saving the changes. As
+   implemented, this command is equivalent to the EMquit command.
+
+If you are at all familiar with the Turbo Pascal editor, you should
+find the behavior of MEMO quite intuitive. Keep in mind, however, that
+TPMEMO does not implement any of the block-related commands found in
+TURBO's editor.
+
+Miscellaneous Notes
+---------------------------------------------------------------------
+
+  Common Mistakes
+  ---------------
+  Probably the most common mistake people make when using TPMEMO is
+  that of calling ReadMemoFile *after* they have called
+  InitControlBlock. The problem with doing so is that ReadMemoFile
+  knows nothing about the control block, and consequently it cannot
+  reinitialize the control block based on the new contents of the
+  buffer. There are two ways to insure that the control block is
+  initialized properly: (1) Call ReadMemoFile *before* calling
+  InitControlBlock, as is done in MEMO.PAS; or (2) call
+  InitBufferState immediately following the call to ReadMemoFile.
+
+  The Modified Flag
+  -----------------
+  The Modified flag in an editor control block indicates whether or
+  not any changes have been made to the edit buffer. This flag is
+  temporarily set any time that a change is made to the text of a
+  line. If the changes made are undone (either manually or using the
+  restore line command, <CtrlQ><L>), the flag will be reset to its
+  previous state. Once the cursor is moved from a modified line, the
+  flag will remain set until it is cleared by a call to
+  InitControlBlock or SaveMemoFile.
+
+  Reentrancy
+  ----------
+  The editor in TPMEMO is completely reentrant. That is, it does not
+  alter any global variables other than the editor control block
+  passed to it (which may or may not be a global variable). The main
+  implication of this feature is that it is possible for a
+  user-written routine called by EditMemo to in turn call EditMemo to
+  edit a second file or memo field. Although the Turbo Professional
+  manual does not mention it, the screen manager in TPENTRY is also
+  reentrant in the same sense.
+
+  Edit Window Size, Etc.
+  ----------------------
+  The minimum size of an edit window is 1 row x 1 column, although you
+  would obviously never want a window that narrow. You might, in
+  unusual cases, want a one-row window, however, because it is
+  technically possible to use TPMEMO as a line editor (like TPEDIT).
+  To do so, you would
+
+    - specify a one-row window (YLow = YHigh) in the call to
+      InitControlBlock
+    - specify a LineLimit parameter of 1 in the call to
+      InitControlBlock
+    - and, optionally, set MaxLineLength to the width of the edit
+      window less 1 (be sure to reset MaxLineLength to 127 afterward)
+
+  This might be useful in cases where TPMEMO is needed in a program,
+  and you want to avoid pulling in TPEDIT. Keep in mind, however, that
+  <Enter> is not an exit command in TPMEMO. You would probably want to
+  temporarily reassign <Enter> to an exit command such as EMuser0 if
+  you are going to do this.
+
+  Tabs
+  ----
+  TPMEMO inserts 'tabs' by adding the appropriate number of spaces to
+  a line. It is not equipped to handle 'hard tabs' (ASCII 9).
+
+  Line Limit in Editor
+  --------------------
+  Although the memo field editor allows you to specify a limit on the
+  number of lines that the user may enter, that limit is not enforced
+  in two cases: when the buffer contains too many lines before editing
+  begins, and when text is being reformatted (there's no good way to
+  determine in advance how many lines there will be after
+  reformatting). In both cases, the editor will simply generate the
+  'tmOverLineLimit' error.
+

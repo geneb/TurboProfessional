@@ -1,0 +1,430 @@
+  {.F-}
+const
+  On           = True;
+  Off          = False;
+
+  {available editing commands}
+  ESnone       = 00;  {Not a command}
+  {basic editing commands}
+  ESchar       = 01;  {A character to enter the string}
+  ESctrlChar   = 02;  {Accept control character if allowable}
+  ESrestore    = 03;  {Restore default and continue}
+  EShome       = 04;  {Cursor to beginning of line}
+  ESend        = 05;  {Cursor to end of line}
+  ESleft       = 06;  {Cursor left by one character}
+  ESright      = 07;  {Cursor right by one character}
+  ESwordLeft   = 08;  {Cursor left one word}
+  ESwordRight  = 09;  {Cursor right one word}
+  ESback       = 10;  {Backspace one character}
+  ESdel        = 11;  {Delete current character}
+  ESdelLine    = 12;  {Delete entire line}
+  ESdelEol     = 13;  {Delete from cursor to end of line}
+  ESdelBol     = 14;  {Delete from beginning of line to cursor}
+  ESdelWord    = 15;  {Delete word to right of cursor}
+  ESins        = 16;  {Toggle insert mode}
+  EShelp       = 17;  {Hook for invoking a help system}
+  EStab        = 18;  {Next subfield, or next field in order}
+  ESbackTab    = 19;  {Previous subfield, or previous field in order}
+  {commands for the multiple choice editor}
+  ESincChoice  = 20;  {increment choice}
+  ESdecChoice  = 21;  {decrement choice}
+  {commands for moving from field to field, record to record}
+  ESnextField  = 22;  {Next field in order}
+  ESprevField  = 23;  {Previous field in order}
+  ESdownField  = 24;  {Next field below current one}
+  ESupField    = 25;  {Next field above current one}
+  ESnextRec    = 26;  {Next record}
+  ESprevRec    = 27;  {Previous record}
+  ESfirstFld   = 28;  {First field}
+  ESlastFld    = 29;  {Last field}
+  {next two commands enabled only if TpEntryScrolls is defined}
+  ESpageUp     = 30;  {Previous page}
+  ESpageDown   = 31;  {Next page}
+  {other commands that exit from the line editor}
+  ESnested     = 32;  {exit for nested form}
+  ESuser0      = 33;  {user-defined exit keys}
+  ESuser1      = 34;
+  ESuser2      = 35;
+  ESuser3      = 36;
+  ESuser4      = 37;
+  ESuser5      = 38;
+  ESuser6      = 39;
+  ESuser7      = 40;
+  ESuser8      = 41;
+  ESuser9      = 42;
+  ESdone       = 43;  {completely finished with editing}
+  ESquit       = 44;  {Restore default string and quit}
+  ESclickExit  = 45;  {for internal use -- double mouse click produces an exit}
+  ESmouse      = 46;  {select field pointed to by mouse}
+
+  {error message codes}
+  InitError     = 00;  {uninitialized ESrecord}
+  OverflowError = 01;  {too many fields}
+  ParamError    = 02;  {a bad parameter to a procedure}
+  {--------------------------------------}
+  MemoryError   = 03;  {not enough memory}
+  FormatError   = 04;  {bad format}
+  RangeError    = 05;  {entry out of range}
+  ReqFldError   = 06;  {field is required}
+  BlanksError   = 07;  {field contains blanks}
+  PartialError  = 08;  {field contains partial entry}
+  BadCharError  = 09;  {field contains illegal character}
+
+  BadFieldID   = $FFFF; {illegal field ID value}
+type
+  EStype       = ESnone..ESmouse;
+  CommandSet   = set of EStype;
+  CharSet      = set of Char;
+  CaseChange   = (NoChange, UpperCase, LowerCase);
+
+const
+  {standard command sets}
+  StringCommands : CommandSet = {all commands available}
+    [ESchar..ESmouse];
+  ReadOnlyCommands : CommandSet = {no editing commands}
+    [EShome..ESwordRight, ESins..ESbackTab, ESnextField..ESmouse];
+
+  {$IFDEF IncludeNumeric}
+const
+  NumberCommands : CommandSet = {commands available for editing numbers}
+    [ESchar, ESrestore..ESdelLine, ESins..ESmouse];
+  {$ENDIF}
+
+  {$IFDEF IncludeChoice}
+const
+  ChoiceCommands : CommandSet = {commands available for multiple choice fields}
+    [ESchar, ESrestore, ESleft..ESwordRight, EShelp..ESmouse];
+  {$ENDIF}
+
+const
+  {the following characters are meaningful in Picture strings}
+  AnyChar     = 'X';         {allows any character}
+  ForceUp     = '!';         {allows any character, forces upper case}
+  ForceLo     = 'L';         {allows any character, forces lower case}
+  AlphaOnly   = 'a';         {allows alphas only}
+  UpperAlpha  = 'A';         {allows alphas only, forces upper case}
+  LowerAlpha  = 'l';         {allows alphas only, forces lower case}
+  NumberOnly  = '9';         {allows numbers and spaces only}
+  DigitOnly   = '#';         {allows numbers, spaces, minus, period}
+  BooleanOnly = 'B';         {allows T, t, F, f}
+  YesNoOnly   = 'Y';         {allows Y, y, N, n}
+
+  User1       = '1';         {for user-defined character sets 1..8}
+  User2       = '2';
+  User3       = '3';
+  User4       = '4';
+  User5       = '5';
+  User6       = '6';
+  User7       = '7';
+  User8       = '8';
+
+  Subst1      = #1;          {for user-defined substitutions} {!!.12}
+  Subst2      = #2;
+  Subst3      = #3;
+  Subst4      = #4;
+  Subst5      = #5;
+  Subst6      = #6;
+  Subst7      = #7;
+  Subst8      = #8;
+
+const
+  {other special characters allowed in Picture strings}
+  FloatDollar = '$';         {floating dollar sign}
+  CurrencyLt  = 'c';         {currency to left of the amount}
+  CurrencyLtStr : string[5] = '$'; {corresponding string}
+  CurrencyRt  = 'C';         {currency to right of the amount}
+  CurrencyRtStr : string[5] = '';
+  DecimalPt   = '.';         {insert decimal point}
+  DecimalChar : Char = '.';  {character used for decimal point}
+  Comma       = ',';         {character used to separate numbers}
+  CommaChar   : Char = ',';  {character used for comma}
+  {NOTE: Comma and FloatDollar are allowed only in fields containing
+   fixed decimal points and/or numeric fields in which there can be no
+   decimal point}
+
+  {the following special characters are used by ValidateSubfields}
+  PartialChar   = 'p';       {prohibit Partial entry in this subfield}
+  ReqdChar      = 'r';       {entire subfield is Required}
+  UnlessChar    = 'u';       {no blanks in subfield Unless whole field is blank}
+
+  {character sets corresponding to the first group of constants shown above}
+  AnyCharSet    : CharSet = [#0..#255]; {AnyChar, ForceUp, ForceLo}
+  AlphaOnlySet  : CharSet = {AlphaOnly, UpperAlpha, LowerAlpha}
+    ['A'..'Z', 'a'..'z', #128..#154, #160..#167, ' ', '-', '.', ','];
+  NumberOnlySet : CharSet = ['0'..'9', ' '];
+  DigitOnlySet  : CharSet = ['0'..'9', ' ', '-', '.'];
+  BooleanSet    : CharSet = ['T','F'];
+  YesNoSet      : CharSet = ['Y','N'];
+
+  UserSet1      : CharSet = [#0..#255]; {user-defined sets}
+  UserSet2      : CharSet = [#0..#255];
+  UserSet3      : CharSet = [#0..#255];
+  UserSet4      : CharSet = [#0..#255];
+  UserSet5      : CharSet = [#0..#255];
+  UserSet6      : CharSet = [#0..#255];
+  UserSet7      : CharSet = [#0..#255];
+  UserSet8      : CharSet = [#0..#255];
+
+  {these determine whether or not upper/lower case is forced for User1..User8}
+  ForceCaseUser : array[User1..User8] of CaseChange = (
+    NoChange, NoChange, NoChange, NoChange,
+    NoChange, NoChange, NoChange, NoChange);
+
+  {for user-defined substitutions} {!!.12}
+  SubstChars : array[Subst1..Subst8] of Char = (#1, #2, #3, #4, #5, #6, #7, #8);
+
+  {bit masks for EditFlags}
+  NumericMask        = $8000; {edit from right to left--for numbers only}
+  MultChoiceMask     = $4000; {a multiple-choice field}
+  NestedMask         = $2000; {if set, field has a nested form assoc. with it}
+  RequiredMask       = $1000; {if set, field cannot be empty}
+  ProtectedMask      = $0800; {if set, field contents cannot be modified}
+  AutoNumLockMask    = $0400; {auto-activate/deactivate NumLock--numbers only}
+  InsertPushesMask   = $0200; {if set, inserting can push a character off end}
+  RightJustifyMask   = $0100; {if set, field is right-justified}
+  PasswordModeMask   = $0080; {if set, contents of field are suppressed}
+  AutoAdvanceBgn     = $0040; {advance to prev field when beg. of field passed}
+  AutoAdvanceEnd     = $0020; {advance to next field when end of field passed}
+  CursorToEndMask    = $0010; {put cursor at end of string initially}
+  TrimBlanksMask     = $0008; {trim leading/trailing blanks when finished}
+  ClearFirstCharMask = $0004; {clear string if first character is ASCII}
+  ForceOvertypeMask  = $0002; {if ForceMode set, selects insert or overtype}
+  ForceModeMask      = $0001; {force insert or overtype, else use default}
+
+  {bit masks for XFlags}
+  XMask01            = $8000; {reserved}
+  XMask02            = $4000;
+  XMask03            = $2000;
+  XMask04            = $1000;
+  XMask05            = $0800;
+  XMask06            = $0400;
+  XMask07            = $0200;
+  CharFieldMask      = $0100; {a character field--used internally}
+  ModifiedMask       = $0080; {marks fields modified while editing}
+  BooleanFieldMask   = $0040; {a boolean or yes/no field--used internally}
+  AllowClickExit     = $0020; {produce ESclickExit on double click}
+  FirstRowMask       = $0010; {flags fields on row of first unprotected field}
+  LastRowMask        = $0008; {flags fields on row of last unprotected field}
+  SingleFieldMask    = $0004; {entry screen has only one field}
+  ProhibitNextField  = $0002; {disallow ESnextField command--used internally}
+  ProhibitPrevField  = $0001; {disallow ESprevField command--used internally}
+
+const
+  {global configuration constants}
+{$IFNDEF Ver40}
+  DefFlags           = InsertPushesMask+AutoAdvanceBgn+AutoAdvanceEnd+TrimBlanksMask;
+{$ELSE}
+  DefFlags           = $0268;
+{$ENDIF}
+  ESeditFlags        : Word    = DefFlags;
+  DefXFlags          = $0000;
+  ESxFlags           : Word    = DefXFlags;
+  ESpromptAttr       : Byte    = 7;    {default color for prompt}
+  ESfieldAttr        : Byte    = 7;    {default color for inactive fields}
+  ESstringAttr       : Byte    = 7;    {default color for normal characters}
+  ESctrlAttr         : Byte    = 7;    {default color for control characters}
+  ESprPromptAttr     : Byte    = 7;    {default color for protected prompts}
+  ESprFieldAttr      : Byte    = 7;    {default color for protected fields}
+  ESpadChar          : Char    = ' ';  {character used to pad strings}
+  ESpasswordChar     : Char    = ^G;   {character used in password mode}
+  InsertMode         : Boolean = True; {default to insert mode}
+  EntryMapCtrls      : Boolean = True; {map control characters to alphas}
+
+{$IFDEF UseMouse}
+const
+  EntryMouseEnabled : Boolean = False;
+{$ENDIF}
+
+{$IFDEF TpEntryScrolls}
+const
+  ScrollByPage      : Boolean = False;
+{$ENDIF}
+
+type
+  WrapModeType = (StopAtEdges, WrapAtEdges, ExitAtEdges);
+  StringPtr    = ^string;
+  RangeType =
+    record case Byte of                  {size}
+      00 : (rtCh  : Char);                {01}
+      01 : (rtB   : Byte);
+      02 : (rtSht : ShortInt);
+      03 : (rtI   : Integer);             {02}
+      04 : (rtW   : Word);
+      05 : (rt3   : array[1..3] of Byte); {03} {for type-casting}
+      06 : (rtL   : LongInt);             {04}
+      07 : (rtSgl : Single);
+      08 : (rtP   : Pointer);
+      09 : (rt5   : array[1..5] of Byte); {05} {for type-casting}
+      10 : (rtR   : Real);                {06}
+      11 : (rt7   : array[1..7] of Byte); {07} {for type-casting}
+      12 : (rtD   : Double);              {08}
+      13 : (rtCmp : Comp);
+      14 : (rt9   : array[1..9] of Byte); {09} {for type-casting}
+      15 : (rtE   : Extended);            {10}
+      {$IFDEF UseBCD}
+      16 : (rtBcd : BCD);                 {10}
+      {$ENDIF}
+      17 : (rtDat : Date);                {2 or 4}
+    end;
+
+  {main data structures}
+  FieldRecPtr  = ^FieldRec;
+  FieldRec =
+    record
+      FieldID     : Word;         {field ID--assigned automatically}
+      Prompt      : StringPtr;    {points to edit prompt}
+      pRow        : Word;         {coordinates for prompt}
+      pCol        : Word;
+      PromptAttr  : Byte;         {attribute for prompt}
+      prPromptAttr : Byte;        {attribute for prompt when protected}
+      Picture     : StringPtr;    {points to edit mask}
+      eRow        : Word;         {coordinates for edit field}
+      eCol        : Word;
+      EditLen     : Byte;         {width of edit field}
+      PadChar     : Char;         {char used to pad end of string}
+      StringAttr  : Byte;         {color for normal characters}
+      FieldAttr   : Byte;         {color for field when inactive}
+      PrFieldAttr : Byte;         {color for field when protected}
+      CtrlAttr    : Byte;         {color for control characters}
+      EditFlags   : Word;         {bit flags for editor options--see above}
+      XFlags      : Word;         {more bit flags -- for expansion}
+      HelpIndex   : Word;         {index to pass to help routine}
+      EditSt      : StringPtr;    {points to string to edit}
+      ValidatePtr : Pointer;      {pointer to validation routine, or nil}
+      DPlaces     : Byte;         {max decimal places, if no '.' in Picture}
+      RangeLo     : RangeType;    {valid range for the field}
+      RangeHi     : RangeType;
+      ConvertPtr  : Pointer;      {points to conversion routine}
+      VarPtr      : Pointer;      {points to the actual variable}
+      PrevField   : FieldRecPtr;  {pointers to next, previous fields}
+      NextField   : FieldRecPtr;
+      NextID      : Word;         {.$FFFF, or ID of field to move to on <Enter>}
+      PrevID      : Word;         {.$FFFF, or ID of field to move to on <ShTab>}
+    end;
+
+  ESrecord =
+    record
+      Signature       : LongInt;      {used to check for proper initialization}
+      FirstField      : FieldRecPtr;  {first field in edit screen}
+      LastField       : FieldRecPtr;  {last field in edit screen}
+      CurrentField    : FieldRecPtr;  {current field}
+      CurrentID       : Word;         {ID of current field}
+      KnownField      : FieldRecPtr;  {last field found by FindFieldID}
+      FieldCount      : Word;         {number of fields}
+      WrapMode        : WrapModeType; {governs behavior at edges of edit screen}
+      BeepOnError     : Boolean;      {beep when illegal char entered?}
+      LeftD           : Char;         {field delimiters (null = none)}
+      RightD          : Char;
+      AttrD           : Byte;         {attribute for delimiters}
+      AttrDS          : Byte;         {attribute for delimiters when selected}
+      PreEditPtr      : Pointer;      {call before each edit}
+      PostEditPtr     : Pointer;      {call after each edit}
+      ErrorPtr        : Pointer;      {call after an error}
+      UpdatePtr       : Pointer;      {call after entry screen redrawn}
+      NewFieldID      : Word;         {ID of a field to switch to}
+      ReadOnlyFlag    : Boolean;      {flag set when in read-only mode}
+      RowOffset       : Integer;      {number of rows above top of window}
+      ColOffset       : Integer;      {number of cols to left of window}
+      BackAttr        : Byte;         {background attribute}
+      XL, YL, XH, YH  : Byte;         {window coordinates, not including frame}
+      Framed          : Boolean;      {true if window is framed}
+      Frame           : FrameArray;   {characters used for the frame}
+      FrameAttr       : Byte;         {attribute for the frame}
+      SliderPos       : Byte;         {position of slider on scroll bar}
+      FirstRow        : Word;         {row numbers for first and last field}
+      LastRow         : Word;
+      WindowScrolls   : ShortInt;     {1 = scrollable, 0 = not, -1 = unknown}
+      HaveScrollBar   : Boolean;      {entry screen has a scroll bar}
+      VS              : VScreen;      {virtual screen for scrollable window}
+    end;
+
+  PictureFlags    = array[1..255] of Boolean;
+var
+  EntryKeyPtr       : Pointer;       {routine to call to retrieve next key}
+const
+  EntryHelpPtr      : Pointer = nil; {pointer to routine to call for help, or nil}
+  LastEntryCommand  : EStype = ESnone;
+const
+  BellPitch         : Word = 700;
+  BellDuration      : Word = 100;
+const
+  {Keystroke to command mapping}
+  EntryKeyMax       = 240;   {last available slot in EntryKeySet}
+  {ID string for installation programs}
+  EntryKeyID : string[17] = 'tpentry keys-5.09';
+  {default key assignments}
+  EntryKeySet : array[0..EntryKeyMax] of Byte = (
+   {length keys         command type      key sequence}
+    3,     $00, $00,    ESquit,          {^Break}
+    3,     $00, $0F,    ESbackTab,       {Shift-Tab}
+    3,     $00, $3B,    EShelp,          {F1}
+    3,     $00, $47,    EShome,          {Home}
+    3,     $00, $48,    ESupField,       {Up}
+    3,     $00, $49,    ESprevRec,       {PgUp}
+    3,     $00, $4B,    ESleft,          {Left}
+    3,     $00, $4D,    ESright,         {Right}
+    3,     $00, $4F,    ESend,           {End}
+    3,     $00, $50,    ESdownField,     {Down}
+    3,     $00, $51,    ESnextRec,       {PgDn}
+    3,     $00, $52,    ESins,           {Ins}
+    3,     $00, $53,    ESdel,           {Del}
+    3,     $00, $73,    ESwordLeft,      {^Left}
+    3,     $00, $74,    ESwordRight,     {^Right}
+    3,     $00, $75,    ESdelEol,        {^End}
+    3,     $00, $76,    ESlastFld,       {^PgDn}
+    3,     $00, $77,    ESdelBol,        {^Home}
+    3,     $00, $84,    ESfirstFld,      {^PgUp}
+    2,     $01,         ESwordLeft,      {^A}
+    2,     $04,         ESright,         {^D}
+    2,     $05,         ESupField,       {^E}
+    2,     $06,         ESwordRight,     {^F}
+    2,     $07,         ESdel,           {^G}
+    2,     $08,         ESback,          {^H, Bksp}
+    2,     $09,         EStab,           {^I, Tab}
+    2,     $0A,         ESdone,          {^J, Ctrl-Enter}
+    2,     $0D,         ESnextField,     {^M, Enter}
+    2,     $10,         ESctrlChar,      {^P}
+    2,     $12,         ESrestore,       {^R}
+    2,     $13,         ESleft,          {^S}
+    2,     $14,         ESdelWord,       {^T}
+    2,     $18,         ESdownField,     {^X}
+    2,     $19,         ESdelLine,       {^Y}
+    2,     $1B,         ESquit,          {Esc}
+    2,     $7F,         ESback,          {^Bksp}
+    3,     $0B, $04,    ESdone,          {^K^D}
+    3,     $0B, $11,    ESdone,          {^K^Q}
+    3,     $11, $03,    ESlastFld,       {^Q^C}
+    3,     $11, $04,    ESend,           {^Q^D}
+    3,     $11, $0C,    ESrestore,       {^Q^L}
+    3,     $11, $12,    ESfirstFld,      {^Q^R}
+    3,     $11, $13,    EShome,          {^Q^S}
+    3,     $11, $19,    ESdelEol,        {^Q^Y}
+  {$IFDEF UseMouse}
+    3,     $00, $EC,    ESnextField,     {click center = Enter}
+    3,     $00, $ED,    EShelp,          {click both   = help}
+    3,     $00, $EE,    ESquit,          {click right  = ESC}
+    3,     $00, $EF,    ESmouse,         {click left   = mouse selection}
+  {$ENDIF}
+  {$IFDEF IncludeChoice}
+    2,     $2D,         ESdecChoice,     {'-'}
+    2,     $2B,         ESincChoice,     {'+'}
+    2,     $20,         ESincChoice,     {' '}
+  {$ENDIF}
+    {-----------pad to end of array----------}
+  {$IFNDEF UseMouse}
+                            0, 0,        {160}
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0,        {170}
+    0, 0, 0, 0,
+  {$ENDIF}
+  {$IFNDEF IncludeChoice}
+                0, 0, 0, 0, 0, 0,        {180}
+    0, 0, 0,                             {190}
+  {$ENDIF}
+             0, 0, 0, 0, 0, 0, 0,        {190}
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0,        {200}
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0,        {210}
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0,        {220}
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0,        {230}
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0);       {240}
+{.F+}
+

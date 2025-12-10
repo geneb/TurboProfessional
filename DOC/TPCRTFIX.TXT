@@ -1,0 +1,14 @@
+Fast Machines and the Turbo Professional TPCRT unit
+====================================================
+
+Applications that use the TPCRT unit may generate the Run-Time 200 error message "Divide by zero" when running on very fast machines (i.e. Pentium Pro 180 and above). The cause of this error is a timing calibration loop that occurs as part of the initialization of the TPCRT unit. This calibration counts how many times round a loop the CPU can do in one clock tick, and then that number is divided by 55 for the count per millisecond.
+
+Unfortunately, the result of this division is a value that is too large to fit into a 16-bit word. The CPU causes an interrupt that BP7 interprets to mean "divide by zero."
+
+TurboPower Software has fixed the calibration loop code to enable Turbo Professional (TPRO) to perform standard Delay timing on very fast machines. For a while we provided a set of instructions on how to fix your copy of TPRO to allow its use on fast machines, but unfortunately we found that several customers had problems in applying those fixes. We have now decided to provide the full source code for the TPCRT unit that includes these calibration fixes. 
+
+Note that this provision of the TPCRT source code does not mean that Turbo Professional as a whole is suddenly "freeware" or "open source". This is not the case: Turbo Professional remains a commercial product and you are bound by its license agreement.
+
+This zip file (TPCRTFIX.ZIP) contains the full source code for the fixed TPCRT.PAS, TPCRT.ASM, and TPCRT2.ASM files. For those people who do not have Turbo Assembler, this zip file also contains the assembled TPCRT.OBJ and TPCRT2.OBJ files. We can only provide support for these changed files if you own TPRO 1.22; we do not guarantee that this fixed TPCRT unit works with any other version of Turbo Professional.
+
+(c) TurboPower Software Company, 1987-2001

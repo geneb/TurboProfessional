@@ -1,0 +1,10 @@
+# don't want to include any of the build artifacts.
+
+# Turbo Pascal Unit files
+src/.tpu
+# Turbo Pascal Protected Mode unit files.
+src/.tpp
+#
+src/.obj
+src/.exe
+src/.com

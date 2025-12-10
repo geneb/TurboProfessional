@@ -1,0 +1,2131 @@
+  function CallESgetKey : Word;
+    {-Call routine pointed to by EntryKeyPtr}
+  inline(
+    $FF/$1E/>EntryKeyPtr);   {call dword ptr [>EntryKeyPtr]}
+
+  procedure CallEShelp(UnitCode : Byte; IdPtr : Pointer; HelpIndex : Word);
+    {-Call routine pointed to by EntryHelpPtr}
+  inline(
+    $FF/$1E/>EntryHelpPtr);  {call dword ptr [>EntryHelpPtr]}
+
+  function ValidationRoutine(var FR : FieldRec;
+                             var ErrCode : Byte;
+                             var ErrorSt : StringPtr) : Boolean;
+    {-Call routine pointed to by ESvalidatePtr}
+  inline(
+    $FF/$1E/>ESvalidatePtr); {call dword ptr [>ESvalidatePtr]}
+
+  procedure ScreenUpdateRoutine(var ESR : ESrecord);
+    {-Call routine pointed to by ESpostEditPtr}
+  inline(
+    $FF/$1E/>ESpostEditPtr);   {call dword ptr [>ESpostEditPtr]}
+
+  procedure ConversionRoutine(var FR : FieldRec; PostEdit : Boolean);
+    {-Call routine pointed to by ESconvertPtr}
+  inline(
+    $FF/$1E/>ESconvertPtr);  {call dword ptr [>ESconvertPtr]}
+
+  procedure ErrorRoutine(var ESR : ESrecord; Code : Byte; Msg : string);
+    {-Call routine pointed to by ESerrorPtr}
+  inline(
+    $FF/$1E/>ESerrorPtr);    {call dword ptr [>ESerrorPtr]}
+
+  procedure HelpPromptRoutine(var ESR : ESrecord);
+    {-Call routine pointed to by ESpreEditPtr}
+  inline(
+    $FF/$1E/>ESpreEditPtr); {call dword ptr [>ESpreEditPtr]}
+
+  {$IFDEF IncludeChoice}
+  procedure IncChoiceRoutine(var Value; FieldID : Word; Factor : Integer; var St : string);
+    {-Call routine pointed to by ESchoicePtr}
+  inline(
+    $FF/$1E/>ESchoicePtr); {call dword ptr [>ESchoicePtr]}
+  {$ENDIF}
+
+{$IFDEF UseMouse}
+  procedure HideMousePrim(var MouseState : Boolean);
+    {-Save state of mouse cursor in MouseState and hide it}
+  begin
+    MouseState := MouseCursorOn;
+    HideMouse;
+  end;
+
+  procedure ShowMousePrim(MouseOn : Boolean);
+    {-Hide or unhide the mouse cursor}
+  begin
+    if MouseOn then
+      ShowMouse
+    else
+      HideMouse;
+  end;
+
+  procedure EnableEntryMouse;
+    {-Enable mouse support in TPENTRY}
+  begin
+    if MouseInstalled and not EntryMouseEnabled then begin
+      EntryKeyPtr := @ReadKeyOrButton;
+      EnableEventHandling;
+      EntryMouseEnabled := True;
+    end;
+  end;
+
+  procedure DisableEntryMouse;
+    {-Disable mouse support in TPENTRY}
+  begin
+    if EntryMouseEnabled then begin
+      EntryKeyPtr := @ReadKeyWord;
+      DisableEventHandling;
+      EntryMouseEnabled := False;
+    end;
+  end;
+
+  {$IFDEF TpEntryScrolls}
+  function CalcSliderPos(var ESR : ESrecord; Row : Word) : Byte;
+    {-Calculate the slider bar position for the specified Row}
+  var
+    SPos, SBheight : Word;
+    TotalRows, RelRow : LongInt;
+  begin
+    with ESR do begin
+      {calculate slider position}
+      TotalRows := Succ(LastRow-FirstRow);
+      RelRow := Row-Pred(FirstRow);
+      SBheight := Succ(YH-YL);
+      SPos := (Pred(RelRow) * 10000) div ((TotalRows * 10000) div SBheight);
+      if SPos >= SBheight then
+        CalcSliderPos := SBheight-1
+      else
+        CalcSliderPos := SPos;
+    end;
+  end;
+
+  procedure UpdateScrollBar(var ESR : ESrecord);
+    {-Update the scroll bar for the mouse}
+  const
+    MouseUp     = ^X;
+    MouseDn     = ^Y;
+    MouseSlider = #178;
+  var
+    SaveMouse : Boolean;
+    S : string[80];
+    SLen : Byte absolute S;
+    SBheight : Word;
+  begin
+    ESR.HaveScrollBar := False;
+
+    {nothing to do if window doesn't scroll or isn't framed}
+    if not EntryMouseEnabled then
+      Exit;
+    if (ESR.WindowScrolls <> 1) or not ESR.Framed then
+      Exit;
+
+    with ESR, ESR.CurrentField^ do begin
+      {number of unprotected rows in entry screen <= than height of window?}
+      SBheight := Succ(YH-YL);
+      if Succ(LastRow-FirstRow) <= SBheight then
+        Exit;
+
+      {hide the mouse}
+      HideMousePrim(SaveMouse);
+
+      {make raw scroll bar}
+      SLen := SBheight+2;
+      S[1] := MouseUp;
+      FillChar(S[2], SBheight, Frame[Vert]);
+      S[SLen] := MouseDn;
+
+      {calculate slider position}
+      SliderPos := CalcSliderPos(ESR, eRow);
+
+      {insert slider into the scroll bar}
+      S[SliderPos+2] := MouseSlider;
+
+      {display the scroll bar}
+      FastVert(S, YL, XH+2, FrameAttr);
+    end;
+
+    {restore the mouse}
+    ShowMousePrim(SaveMouse);
+
+    ESR.HaveScrollBar := True;
+  end;
+  {$ENDIF}
+
+{$ENDIF}
+
+  function FindFieldID(var ESR : ESrecord; FieldID : Word) : FieldRecPtr;
+    {-Return a pointer to the FieldRec with the specified ID, or nil if not found}
+  const
+    FRP : FieldRecPtr = nil;
+  var
+    I, J : Word;
+    KnownID : Word;
+  begin
+    with ESR do
+      if FieldID >= FieldCount then
+        FindFieldID := nil
+      else begin
+        KnownID := KnownField^.FieldID;
+        if FieldID = KnownID then
+          FindFieldID := KnownField
+        else if FieldID = Succ(KnownID) then
+          FindFieldID := KnownField^.NextField
+        else begin
+          if (FieldID > KnownID) then begin
+            FRP := KnownField;
+            J := Succ(KnownID);
+          end
+          else begin
+            FRP := FirstField;
+            J := 1;
+          end;
+          for I := J to FieldID do
+            FRP := FRP^.NextField;
+          KnownField := FRP;
+          FindFieldID := FRP;
+        end;
+      end;
+  end;
+
+  function FieldIsProtected(FRP : FieldRecPtr) : Boolean;
+    {-Return true if FRP points to a protected field}
+  begin
+    if FRP = nil then                                             {!!.21}
+      FieldIsProtected := False                                   {!!.21}
+    else                                                          {!!.21}
+      FieldIsProtected := FlagIsSet(FRP^.EditFlags, ProtectedMask);
+  end;
+
+  procedure ResetEntryScreenFlags(var ESR : ESrecord);
+    {-Flag the first/last rows in the entry screen. Also clears all the
+      ProhibitNextField/ProhibitPrevField and AutoAdvance masks}
+  var
+    I : Word;
+    FRP : FieldRecPtr;
+  begin
+    with ESR do begin
+      {reset flags for all fields}
+      FRP := FirstField;
+      for I := 0 {1} to Pred(FieldCount) do begin {!!.21}
+        ClearFlag(FRP^.XFlags,
+          FirstRowMask+LastRowMask+ProhibitNextField+ProhibitPrevField);
+        if FlagIsSet(FRP^.EditFlags, AutoAdvanceBgn+AutoAdvanceEnd) then
+          SetFlag(FRP^.EditFlags, AutoAdvanceBgn+AutoAdvanceEnd);
+        FRP := FRP^.NextField;
+      end;
+
+      {find the first unprotected field}
+      FRP := FirstField;
+      while FieldIsProtected(FRP) do
+        FRP := FRP^.NextField;
+      if WrapMode = StopAtEdges then
+        with FRP^ do begin
+          ClearFlag(EditFlags, AutoAdvanceBgn);
+          SetFlag(XFlags, ProhibitPrevField);
+        end;
+
+      {set the first row flags for all fields on this row}
+      FirstRow := FRP^.eRow;
+      repeat
+        SetFlag(FRP^.XFlags, FirstRowMask);
+        FRP := FRP^.NextField;
+      until (FRP = nil) or (FRP^.eRow <> FirstRow);
+
+      {find the last unprotected field}
+      FRP := LastField;
+      while FieldIsProtected(FRP) do
+        FRP := FRP^.PrevField;
+      if WrapMode = StopAtEdges then
+        with FRP^ do begin
+          ClearFlag(EditFlags, AutoAdvanceEnd);
+          SetFlag(XFlags, ProhibitNextField);
+        end;
+
+      {set the last row flags for all fields on this row}
+      LastRow := FRP^.eRow;
+      repeat
+        SetFlag(FRP^.XFlags, LastRowMask);
+        FRP := FRP^.PrevField;
+      until (FRP = nil) or (FRP^.eRow <> LastRow);
+    end;
+  end;
+
+  function CurrentFieldModified(var ESR : ESrecord) : Boolean;
+    {-Return True if current field was modified.}
+  begin
+    CurrentFieldModified := FlagIsSet(ESR.CurrentField^.XFlags, ModifiedMask);
+  end;
+
+  procedure TrimSpacesPrim(var S : string);
+    {-Return a string with leading and trailing blanks removed}
+  var
+    I : Word;
+    SLen : Byte absolute S;
+  begin
+    while (SLen > 0) and (S[SLen] = ' ') do
+      Dec(SLen);
+    I := 1;
+    while (I <= SLen) and (S[I] = ' ') do
+      Inc(I);
+    Dec(I);
+    if I > 0 then
+      Delete(S, 1, I);
+  end;
+
+  procedure FixRealPrim(var S : string);
+    {-Get a string representing a real ready for Val}
+  var
+    SLen : Byte absolute S;
+    I : Byte;
+  begin
+    TrimSpacesPrim(S);
+    if SLen > 0 then begin
+      {check for 'nnnn.'}
+      if S[SLen] = DecimalChar then begin
+        Inc(SLen, 1);
+        S[SLen] := '0';
+      end;
+
+      {check for '.nnnn'}
+      if S[1] = DecimalChar then
+        S := '0'+S;
+
+      {check for '-.nnnn'}
+      if (SLen > 1) and (S[1] = '-') and (S[2] = DecimalChar) then
+        Insert('0', S, 2);
+
+      {Val doesn't accept alternate decimal point chars}
+      I := Pos(DecimalChar, S);
+      if I <> 0 then
+        S[I] := '.';
+    end
+    else
+      {empty string = 0}
+      S := '0';
+  end;
+
+  procedure FixCoordinates(var ESR : ESrecord; var Row, Col : Word);
+    {-Adjust screen coordinates}
+  begin
+    with ESR do
+      if VirtualSegment = VideoSegment then begin
+        Inc(Integer(Row), Integer(YL)-RowOffset);
+        Inc(Integer(Col), Integer(XL)-ColOffset);
+      end;
+  end;
+
+  function FixCase(PicChar : Char; var Ch : Char) : Char;
+    {-Fix the case of Ch based on PicChar}
+  begin
+    case PicChar of
+      TimeOnly,
+      EmOnly :
+        if UpcaseTime then
+          Ch := Upcase(Ch);
+      ForceUp,
+      UpperAlpha,
+      BooleanOnly,
+      YesNoOnly :
+        Ch := Upcase(Ch);
+      ForceLo,
+      LowerAlpha :
+        Ch := Locase(Ch);
+      User1..User8 :
+        case ForceCaseUser[PicChar] of
+          UpperCase : Ch := Upcase(Ch);
+          LowerCase : Ch := Locase(Ch);
+        end;
+    end;
+    FixCase := Ch;
+  end;
+
+  function CharOK(PicChar : Char; var Ch : Char; Fix : Boolean) : Boolean;
+    {-Return True if Ch is in character set corresponding to PicChar}
+  begin
+    if Fix then
+      Ch := FixCase(PicChar, Ch);
+    case PicChar of
+      AnyChar,
+      ForceUp,
+      ForceLo : CharOK := Ch in AnyCharSet;
+      AlphaOnly,
+      UpperAlpha,
+      LowerAlpha : CharOK := Ch in AlphaOnlySet;
+      MonthOnly, MonthOnlyU,
+      DayOnly, DayOnlyU,
+      YearOnly,
+      HourOnly, HourOnlyU,
+      MinOnly, MinOnlyU,
+      SecOnly, SecOnlyU,
+      NumberOnly : CharOK := Ch in NumberOnlySet;
+      TimeOnly :
+        case UpCase(Ch) of
+          'P', 'A' : CharOK := True;
+          else CharOK := False;
+        end;
+      EmOnly : CharOK := Upcase(Ch) = 'M';
+      DigitOnly : CharOK := Ch in DigitOnlySet;
+      BooleanOnly : CharOK := Ch in BooleanSet;
+      YesNoOnly : CharOK := Ch in YesNoSet;
+      User1 : CharOK := Ch in UserSet1;
+      User2 : CharOK := Ch in UserSet2;
+      User3 : CharOK := Ch in UserSet3;
+      User4 : CharOK := Ch in UserSet4;
+      User5 : CharOK := Ch in UserSet5;
+      User6 : CharOK := Ch in UserSet6;
+      User7 : CharOK := Ch in UserSet7;
+      User8 : CharOK := Ch in UserSet8;
+    end;
+  end;
+
+  procedure DrawEditString(St : string;
+                           Row, Col : Word;
+                           EditLen, POffset : Byte;
+                           StringAttr, CtrlAttr : Byte;
+                           PadChar : Char;
+                           EditFlags : Word;
+                           var Picture : string;
+                           Flags : PictureFlags);
+    {-Draw the string}
+  var
+    I : Integer;
+    A : Byte;
+    C : Char;
+    Password : Boolean;
+    {$IFDEF UseMouse}
+    SaveMouse : Boolean;
+    {$ENDIF}
+  begin
+    {$IFDEF UseMouse}
+    if VirtualSegment = VideoSegment then
+      HideMousePrim(SaveMouse);
+    {$ENDIF}
+
+    Password := FlagIsSet(EditFlags, PasswordModeMask);
+    if (PadChar <> ' ') or Password then begin
+      {we need to fill in spaces set aside for '$' and ','}
+      for I := 1 to Length(St) do
+        case Picture[I] of
+          FloatDollar, Comma : Flags[I] := True;
+        end;
+
+      if FlagIsSet(EditFlags, RightJustifyMask) then begin
+        {field is right-justified}
+        I := 1;
+        while not Flags[I] do
+          Inc(I);
+        while Flags[I] and (St[I] = ' ') do begin
+          St[I] := PadChar;
+          Inc(I);
+        end;
+        if Password then
+          while I <= Length(St) do begin
+            if Flags[I] then
+              St[I] := ESpasswordChar;
+            Inc(I);
+          end;
+      end
+      else begin
+        {field is left-justified}
+        I := Length(St);
+        while I > 0 do begin
+          while (I > 0) and not Flags[I] do
+            Dec(I);
+          while (I > 0) and Flags[I] and (St[I] = ' ') do begin
+            St[I] := PadChar;
+            Dec(I);
+          end;
+          while (I > 0) and Flags[I] do begin
+            if Password then
+              St[I] := ESpasswordChar;
+            Dec(I);
+          end;
+          Dec(I);
+        end;
+      end;
+    end;
+
+    if (CtrlAttr = StringAttr) or Password or not EntryMapCtrls then
+      {draw the desired substring}
+      FastWrite(Copy(St, Succ(POffset), EditLen), Row, Col, StringAttr)
+    else
+      {draw the string, converting control characters}
+      for I := 1 to EditLen do begin
+        C := St[POffset+I];
+        if C < ' ' then begin
+          if EntryMapCtrls then
+            C := Chr(Ord(C) or $40);
+          A := CtrlAttr;
+        end
+        else
+          A := StringAttr;
+        FastFill(1, C, Row, Col+Pred(I), A);
+      end;
+
+    {$IFDEF UseMouse}
+    if VirtualSegment = VideoSegment then
+      ShowMousePrim(SaveMouse);
+    {$ENDIF}
+  end;
+
+  procedure InitPictureFlags(var Picture : string; var PFlags : PictureFlags);
+    {-Initialize a picture flags table}
+  var
+    I : Word;
+    PLen : Byte absolute Picture;
+  begin
+    FillChar(PFlags, SizeOf(PFlags), False);
+    for I := 1 to PLen do
+      case Picture[I] of
+        AnyChar, ForceUp, ForceLo, AlphaOnly, UpperAlpha,
+        LowerAlpha, NumberOnly, DigitOnly, BooleanOnly,
+        YesNoOnly, MonthOnly, DayOnly, YearOnly, HourOnly,
+        MinOnly, SecOnly, MonthOnlyU, DayOnlyU,
+        HourOnlyU, MinOnlyU, SecOnlyU, TimeOnly, EmOnly,
+        User1..User8 :
+          PFlags[I] := True;
+      end;
+  end;
+
+  procedure CalcWidthAndPlaces(var Picture : string;
+                               var Width, Places : Word;
+                               DPlaces : Byte);
+    {-Given a picture for a numeric string, calculate width and decimal places}
+  var
+    Flags : PictureFlags;
+    I, DotPos : Word;
+  begin
+    {initialize flags table}
+    InitPictureFlags(Picture, Flags);
+
+    {find position of period}
+    DotPos := Pos(DecimalPt, Picture);
+
+    {calculate decimal places}
+    if DotPos = 0 then
+      Places := DPlaces
+    else begin
+      I := DotPos+1;
+      Places := 0;
+      while Flags[I] do begin
+        Inc(Places);
+        Inc(I);
+      end;
+    end;
+
+    {calculate width}
+    I := 1;
+    while not Flags[I] do
+      Inc(I);
+    Width := 0;
+    while Flags[I] or ((I <= Length(Picture)) and (Picture[I] = Comma)) do begin {!!.21}
+      Inc(Width, Ord(Flags[I]));
+      Inc(I);
+    end;
+
+    {add decimal places and period}
+    if (DotPos <> 0) and (Places <> 0) then
+      Inc(Width, Places+1);
+  end;
+
+  procedure TrimTrailingZeros(var S : string);
+    {-Trim trailing zeros from a numeric string. It is assumed that there is a
+      decimal point prior to the zeros. Also strips leading spaces}
+  var
+    SLen : Byte absolute S;
+  begin
+    while S[SLen] = '0' do
+      Dec(SLen);
+    if S[SLen] = '.' then
+      Dec(SLen);
+    TrimSpacesPrim(S);
+  end;
+
+  procedure FixDecimalPoint(var S : string);
+    {-Fix decimal points for real numbers before merging}
+  var
+    I : Word;
+  begin
+    I := Pos('.', S);
+    if I <> 0 then
+      S[I] := DecimalChar;
+  end;
+
+  procedure StripPicture(var Picture, EditSt, S : string);
+    {-Strip picture characters out of EditSt and return in S}
+  var
+    SLen : Byte absolute S;
+    Flags : PictureFlags;
+    I, J, FDP : Word;
+  begin
+    if Length(EditSt) <> Length(Picture) then begin
+      S := EditSt;
+      Exit;
+    end;
+
+    InitPictureFlags(Picture, Flags);
+
+    I := Pos(DecimalPt, Picture);
+    if I <> 0 then
+      Flags[I] := True;
+
+    FDP := Pos(FloatDollar, Picture);
+    if FDP <> 0 then begin
+      while (Picture[FDP] = FloatDollar) do begin
+        Flags[FDP] := True;
+        Inc(FDP);
+      end;
+    end;
+
+    for J := 1 to Length(Picture) do
+      if Picture[J] = Comma then
+        Flags[J] := True;
+
+    SLen := 0;
+    for I := 1 to Length(Picture) do
+      if Flags[I] then begin
+        Inc(SLen);
+        S[SLen] := EditSt[I];
+      end;
+
+    if FDP <> 0 then begin
+      I := Pos(CurrencyLtStr, S);
+      if I <> 0 then
+        Delete(S, I, Length(CurrencyLtStr));
+    end;
+
+    if Pos(Comma, Picture) <> 0 then
+      repeat
+        I := Pos(CommaChar, S);
+        if I <> 0 then
+          Delete(S, I, 1);
+      until (I = 0);
+
+    if Pos(DecimalPt, Picture) <> 0 then begin
+      I := Pos(DecimalChar, S);
+      if I <> 0 then
+        S[I] := '.';
+    end;
+  end;
+
+  procedure MergePicturePrim(var Picture, St, S : string;          {!!.09}
+                             EditFlags : Word; IsReal : Boolean);  {!!.09}
+    {-Merge St with Picture and return result in S}
+  var
+    SLen : Byte absolute S;
+    StLen : Byte absolute St;
+    Width,
+    Places,
+    DotPosP,
+    DotPosS,
+    I, J, K, N : Word;
+    Flags : PictureFlags;
+    IsNumber,
+    NeedMinus,
+    NeedFloat : Boolean;
+    TempCurrency : string[5];
+    TClen : Byte absolute TempCurrency;
+  begin
+    S := Picture;
+    DotPosP := Pos(DecimalPt, Picture);
+    InitPictureFlags(Picture, Flags);
+
+    {is it a numeric string?}
+    IsNumber := (DotPosP <> 0) or (Pos(FloatDollar, Picture) <> 0) or
+      (Pos(Comma, Picture) <> 0);
+
+    {$IFDEF IncludeNumeric}
+      IsNumber := IsNumber or FlagIsSet(EditFlags, NumericMask);
+    {$ENDIF}
+
+    {take care of currency strings}
+    I := Pos(CurrencyLt, Picture);
+    if I <> 0 then begin
+      IsNumber := True;
+      K := I;
+      while (K < SLen) and (Picture[K+1] = CurrencyLt) do
+        Inc(K);
+      J := Length(CurrencyLtStr);
+      for N := K downto I do
+        if J > 0 then begin
+          S[N] := CurrencyLtStr[J];
+          Dec(J);
+        end
+        else
+          S[N] := ' ';
+    end;
+    I := Pos(CurrencyRt, Picture);
+    if I <> 0 then begin
+      IsNumber := True;
+      J := 1;
+      while (I <= SLen) and (Picture[I] = CurrencyRt) do begin
+        if J <= Length(CurrencyRtStr) then
+          S[I] := CurrencyRtStr[J]
+        else
+          S[I] := ' ';
+        Inc(I);
+        Inc(J);
+      end;
+    end;
+
+    if IsNumber then begin
+      {see if we need to strip picture characters}
+      if (StLen = SLen) and (Pos(DecimalPt, St) = DotPosP) then {!!.12}
+        StripPicture(Picture, St, St);
+
+      {we need to fill in the FloatDollar positions too, if any}
+      I := Pos(FloatDollar, Picture);
+      if I <> 0 then begin
+        TempCurrency := CurrencyLtStr;
+        while Picture[I] = FloatDollar do begin
+          Flags[I] := True;
+          Inc(I);
+        end;
+      end
+      else
+        TClen := 0;
+
+      {trim leading and trailing blanks}
+      TrimSpacesPrim(St);
+
+      {check for a minus sign}
+      NeedMinus := (StLen > 0) and (St[1] = '-');
+      if NeedMinus then
+        Delete(St, 1, 1);
+
+      {it's a numeric field--align the decimal points}
+      DotPosS := Pos(DecimalPt, St);
+
+      {see if we need a floating dollar sign}
+      if StLen = 0 then
+        NeedFloat := False
+      else
+        NeedFloat := TClen <> 0;
+
+      {if there's no tail, pretend there's a dot beyond the end of St}
+      if DotPosS = 0 then
+        K := StLen+1
+      else
+        K := DotPosS;
+
+      {copy the tail of the string}
+      if DotPosP = 0 then
+        I := SLen + 1
+      else
+        I := DotPosP+1;
+      J := K+1;
+      while (J <= StLen) and (I <= SLen) and Flags[I] do begin
+        S[I] := St[J];
+        Inc(I);
+        Inc(J);
+      end;
+
+      {pad to end with 0's}
+      while (I <= SLen) and Flags[I] do begin
+        S[I] := '0';
+        Inc(I);
+      end;
+
+      {copy the front of the string}
+      if DotPosP = 0 then
+        J := SLen
+      else
+        J := DotPosP;
+      if DotPosS <> 0 then
+        StLen := DotPosS-1;
+      for I := J downto 1 do
+        if Flags[I] then begin
+          if (StLen <> 0) then begin
+            S[I] := St[StLen];
+            Dec(StLen);
+          end
+          else if NeedFloat then begin
+            S[I] := TempCurrency[TClen];
+            Dec(TClen);
+            NeedFloat := TClen <> 0;
+          end
+          else if NeedMinus then begin
+            S[I] := '-';
+            NeedMinus := False;
+          end
+          else
+            S[I] := ' ';
+        end
+        else case Picture[I] of
+          Subst1..Subst8 :                  {!!.12}
+            S[I] := SubstChars[Picture[I]]; {!!.12}
+          DecimalPt :
+            S[I] := DecimalChar;
+          Comma :
+            if (StLen <> 0) then
+              S[I] := CommaChar
+            else if NeedFloat then begin
+              S[I] := TempCurrency[TClen];
+              Dec(TClen);
+              NeedFloat := TClen <> 0;
+            end
+            else if NeedMinus then begin
+              S[I] := '-';
+              NeedMinus := False;
+            end
+            else
+              S[I] := ' ';
+        end;
+
+      {put in a 0 before the dot if necessary}
+      if DotPosP <> 0 then begin
+        I := DotPosP-1;
+        if (S[I] = ' ') then
+          S[I] := '0';
+      end;
+    end
+    else begin
+      {deal with problem w/ reals w/ variable # of places} {!!.12}
+      if IsReal and (StLen > SLen) then                    {!!.12}
+        if Pos(DecimalPt, St) <> 0 then begin              {!!.12}
+          StLen := SLen;                                   {!!.12}
+          TrimTrailingZeros(St);                           {!!.12}
+        end;                                               {!!.12}
+
+      if FlagIsSet(EditFlags, RightJustifyMask) then begin
+        {fill in the characters from St}
+        J := StLen;
+        for I := SLen downto 1 do
+          if Flags[I] then
+            if (J >= 1) then begin
+              S[I] := FixCase(Picture[I], St[J]);
+              Dec(J);
+            end
+            else
+              S[I] := ' '                     {!!.12}
+          else case Picture[I] of             {!!.12}
+            Subst1..Subst8 :                  {!!.12}
+              S[I] := SubstChars[Picture[I]]; {!!.12}
+          end;                                {!!.12}
+      end
+      else begin
+        {fill in the characters from St}
+        J := 1;
+        for I := 1 to SLen do
+          if Flags[I] then
+            if (J <= StLen) then begin
+              S[I] := FixCase(Picture[I], St[J]);
+              Inc(J);
+            end
+            else
+              S[I] := ' '                     {!!.12}
+          else case Picture[I] of             {!!.12}
+            Subst1..Subst8 :                  {!!.12}
+              S[I] := SubstChars[Picture[I]]; {!!.12}
+          end;                                {!!.12}
+      end;
+      if IsReal then
+        FixDecimalPoint(S);
+    end;
+  end;
+
+  procedure MergePictureReal(Picture, St : string; var S : string; {!!.09}
+                             EditFlags : Word);
+    {-Merge St with Picture and return result in S--for real fields only}
+  begin
+    MergePicturePrim(Picture, St, S, EditFlags, True);
+  end;
+
+  procedure MergePicture(Picture, St : string; var S : string; EditFlags : Word);
+    {-Merge St with Picture and return result in S}
+  begin
+    MergePicturePrim(Picture, St, S, EditFlags, False);        {!!.09}
+  end;
+
+  procedure SetPromptAttr(A : Byte);
+    {-Set prompt attribute}
+  begin
+    ESpromptAttr := MapColor(A);
+    ESprPromptAttr := ESpromptAttr;
+  end;
+
+  procedure SetFieldAttr(A : Byte);
+    {-Set field attribute}
+  begin
+    ESfieldAttr := MapColor(A);
+    ESprFieldAttr := ESfieldAttr;
+  end;
+
+  procedure SetStringAttr(A : Byte);
+    {-Set string attribute}
+  begin
+    ESstringAttr := MapColor(A);
+  end;
+
+  procedure SetCtrlAttr(A : Byte);
+    {-Set attribute for control characters}
+  begin
+    ESctrlAttr := MapColor(A);
+  end;
+
+  procedure SetProtectAttrs(PromptA, FieldA : Byte);
+    {-Set prompt and field attributes for protected fields}
+  begin
+    ESprPromptAttr := MapColor(PromptA);
+    ESprFieldAttr := MapColor(FieldA);
+  end;
+
+  {$IFDEF IncludeNumeric}
+  procedure SetNumeric(On : Boolean);
+    {-Activate/deactivate use of numeric (right-left) editor}
+  begin
+    if On then
+      SetFlag(ESeditFlags, NumericMask)
+    else
+      ClearFlag(ESeditFlags, NumericMask);
+  end;
+  {$ENDIF}
+
+  procedure SetAutoAdvance(On : Boolean);
+    {-Turn AutoAdvance on/off}
+  begin
+    if On then
+      SetFlag(ESeditFlags, AutoAdvanceBgn+AutoAdvanceEnd)
+    else
+      ClearFlag(ESeditFlags, AutoAdvanceBgn+AutoAdvanceEnd);
+  end;
+
+  procedure SetCursorToEnd(On : Boolean);
+    {-Turn CursorToEnd on/off}
+  begin
+    if On then
+      SetFlag(ESeditFlags, CursorToEndMask)
+    else
+      ClearFlag(ESeditFlags, CursorToEndMask);
+  end;
+
+  procedure SetTrimBlanks(On : Boolean);
+    {-Turn blank trimming on/off}
+  begin
+    if On then
+      SetFlag(ESeditFlags, TrimBlanksMask)
+    else
+      ClearFlag(ESeditFlags, TrimBlanksMask);
+  end;
+
+  procedure SetRightJustify(On : Boolean);
+    {-Turn right justification on/off}
+  begin
+    if On then
+      SetFlag(ESeditFlags, RightJustifyMask)
+    else
+      ClearFlag(ESeditFlags, RightJustifyMask);
+  end;
+
+  procedure SetPadChar(Ch : Char);
+    {-Set character used to pad ends of strings}
+  begin
+    ESpadChar := Ch;
+  end;
+
+  procedure SetClearFirstChar(On : Boolean);
+    {-Turn ClearFirstChar on/off}
+  begin
+    if On then
+      SetFlag(ESeditFlags, ClearFirstCharMask)
+    else
+      ClearFlag(ESeditFlags, ClearFirstCharMask);
+  end;
+
+  procedure SetInsertPushes(On : Boolean);
+    {-Turn InsertPushes flag on/off}
+  begin
+    if On then
+      SetFlag(ESeditFlags, InsertPushesMask)
+    else
+      ClearFlag(ESeditFlags, InsertPushesMask);
+  end;
+
+  procedure SetAutoNumLock(On : Boolean);
+    {-Turn AutoNumLock on/off}
+  begin
+    if On then
+      SetFlag(ESeditFlags, AutoNumLockMask)
+    else
+      ClearFlag(ESeditFlags, AutoNumLockMask);
+  end;
+
+  procedure SetRequired(On : Boolean);
+    {-Turn required field flag on/off}
+  begin
+    if On then
+      SetFlag(ESeditFlags, RequiredMask)
+    else
+      ClearFlag(ESeditFlags, RequiredMask);
+  end;
+
+  procedure SetPasswordMode(On : Boolean);
+    {-Turn password mode on/off}
+  begin
+    if On then
+      SetFlag(ESeditFlags, PasswordModeMask)
+    else
+      ClearFlag(ESeditFlags, PasswordModeMask);
+  end;
+
+  procedure SetProtection(On : Boolean);
+    {-Turn protection on/off}
+  begin
+    if On then
+      SetFlag(ESeditFlags, ProtectedMask)
+    else
+      ClearFlag(ESeditFlags, ProtectedMask);
+  end;
+
+  procedure SetForceMode(Force, Overtype : Boolean);
+    {-Force insert or overtype mode, else use previous setting}
+  begin
+    if Force then begin
+      SetFlag(ESeditFlags, ForceModeMask);
+      if Overtype then
+        SetFlag(ESeditFlags, ForceOvertypeMask)
+      else
+        ClearFlag(ESeditFlags, ForceOvertypeMask);
+    end
+    else
+      ClearFlag(ESeditFlags, ForceModeMask+ForceOvertypeMask);
+  end;
+
+  {$IFDEF UseMouse}
+  procedure SetExitOnSecondClick(On : Boolean);
+    {-Allow double-clicking on a field to produce the ESclickExit exit command?}
+  begin
+    if On then
+      SetFlag(ESxFlags, AllowClickExit)
+    else
+      ClearFlag(ESxFlags, AllowClickExit);
+  end;
+  {$ENDIF}
+
+  procedure SetFieldLinks(var ESR : ESrecord; FieldID, Next, Prev : Word);
+    {-Specify the fields to jump to when <Enter> or <ShTab> pressed on a given
+      field}
+  var
+    FRP : FieldRecPtr;
+  begin
+    FRP := FindFieldID(ESR, FieldID);
+    if FRP <> nil then                                              {!!.21}
+      with FRP^ do begin
+        NextID := Next;
+        PrevID := Prev;
+      end;
+  end;
+
+  procedure SetWrapMode(var ESR : ESrecord; WrapMode : WrapModeType);
+    {-Select the wrap mode for an edit screen}
+  begin
+    ESR.WrapMode := WrapMode;
+  end;
+
+  procedure SetEntryWindow(var ESR : ESrecord; XLow, YLow, XHigh, YHigh : Byte;
+                           Framed : Boolean; BackAttr, FrameAttr : Byte);
+    {-Set coordinates and background color for a data entry window}
+  begin
+    ESR.XL := XLow-1+Ord(Framed);
+    ESR.YL := YLow-1+Ord(Framed);
+    ESR.XH := XHigh-1-Ord(Framed);
+    ESR.YH := YHigh-1-Ord(Framed);
+    ESR.BackAttr := BackAttr;
+    ESR.Framed := Framed;
+    ESR.Frame := FrameChars;
+    ESR.FrameAttr := FrameAttr;
+  end;
+
+  procedure SetBeepOnError(var ESR : ESrecord; On : Boolean);
+    {-Beep when illegal char entered?}
+  begin
+    ESR.BeepOnError := On;
+  end;
+
+  procedure SetDelimiters(var ESR : ESrecord;
+                          Left, Right : Char;
+                          FieldAttr : Byte;
+                          SelectAttr : Byte);
+    {-Set field delimiters for the edit screen (null = none)}
+  begin
+    ESR.LeftD := Left;
+    ESR.RightD := Right;
+    ESR.AttrD := FieldAttr;
+    ESR.AttrDS := SelectAttr;
+  end;
+
+  procedure SetPreEditPtr(var ESR : ESrecord; P : Pointer);
+    {-Pointer to routine to display help message just before field is edited}
+  begin
+    ESR.PreEditPtr := P;
+  end;
+
+  procedure SetPostEditPtr(var ESR : ESrecord; P : Pointer);
+    {-Set pointer to routine to be called after each edit}
+  begin
+    ESR.PostEditPtr := P;
+  end;
+
+  procedure SetUpdatePtr(var ESR : ESrecord; P : Pointer);
+    {-Set pointer to routine to call after entry screen redrawn}
+  begin
+    ESR.UpdatePtr := P;
+  end;
+
+  procedure SetErrorPtr(var ESR : ESrecord; P : Pointer);
+    {-Set pointer to routine to call after error}
+  begin
+    ESR.ErrorPtr := P;
+  end;
+
+  procedure SetAllFieldLinks(var ESR : ESrecord; var LinksMap);
+    {-Set the forward and backward links for all fields in an entry screen}
+  var
+    Map : array[0..MaxFields] of Word absolute LinksMap;
+    I : Integer;
+    FRP : FieldRecPtr;
+
+    function FindBackwardLink(ID : Word) : Word;
+    var
+      I : Word;
+    begin
+      {assume failure}
+      FindBackwardLink := BadFieldID;
+
+      {search for ID in Map}
+      for I := 0 to ESR.FieldCount-1 do
+        if Map[I] = ID then begin
+          FindBackwardLink := I;
+          Exit;
+        end;
+    end;
+
+  begin
+    with ESR do begin
+      {set forward links}
+      FRP := FirstField;
+      for I := 0 to FieldCount-1 do begin
+        FRP^.NextID := Map[I];
+        FRP := FRP^.NextField;
+      end;
+
+      {set backward links}
+      FRP := FirstField;
+      for I := 0 to FieldCount-1 do begin
+        FRP^.PrevID := FindBackwardLink(I);
+        FRP := FRP^.NextField;
+      end;
+    end;
+  end;
+
+  procedure SetPasswordChar(C : Char);
+    {-Set character used in password mode}
+  begin
+    ESpasswordChar := C;
+  end;
+
+  procedure SetBell(Pitch, Duration : Word);
+    {-Set pitch and duration for bell}
+  begin
+    BellPitch := Pitch;
+    BellDuration := Duration;
+  end;
+
+  procedure RingBell;
+    {-Ring the bell}
+  begin
+    Sound(BellPitch);
+    Delay(BellDuration);
+    NoSound;
+  end;
+
+  procedure ChangeProtectionFast(var ESR : ESrecord;
+                                 FieldID : Word;
+                                 OnOff : Boolean);
+    {-Modify the protection status of a field. Must be used in conjunction with
+      ResetEntryScreenFlags}
+  var
+    FRP : FieldRecPtr;
+  begin
+    FRP := FindFieldID(ESR, FieldID);
+    if FRP <> nil then
+      with FRP^ do
+        if OnOff then
+          SetFlag(EditFlags, ProtectedMask)
+        else
+          ClearFlag(EditFlags, ProtectedMask);
+  end;
+
+  procedure ChangeProtection(var ESR : ESrecord; FieldID : Word; OnOff : Boolean);
+    {-Modify the protection status of a field after it has been added}
+  begin
+    {change the protection status}
+    ChangeProtectionFast(ESR, FieldID, OnOff);
+
+    {reset all flags}
+    ResetEntryScreenFlags(ESR);
+  end;
+
+  procedure ChangeRequired(var ESR : ESrecord; FieldID : Word; OnOff : Boolean);
+    {-Modify the required status of a field after it has been added}
+  var
+    FRP : FieldRecPtr;
+  begin
+    FRP := FindFieldID(ESR, FieldID);
+    if FRP <> nil then
+      with FRP^ do
+        if OnOff then
+          SetFlag(EditFlags, RequiredMask)
+        else
+          ClearFlag(EditFlags, RequiredMask);
+  end;
+
+  procedure ChangeValidation(var ESR  : ESrecord;
+                             FieldID  : Word;
+                             Validate : Pointer);
+    {-Change the validation routine for the specified field}
+  var
+    FRP : FieldRecPtr;
+  begin
+    FRP := FindFieldID(ESR, FieldID);
+    if FRP <> nil then
+      with FRP^ do
+        ValidatePtr := Validate;
+  end;
+
+  procedure ChangePromptAttr(var ESR : ESrecord; FieldID : Word; A : Byte);
+    {-Change the prompt attribute for the specified field}
+  var
+    FRP : FieldRecPtr;
+  begin
+    FRP := FindFieldID(ESR, FieldID);
+    if FRP <> nil then
+      with FRP^ do begin
+        PromptAttr := MapColor(A);
+        prPromptAttr := PromptAttr;
+      end;
+  end;
+
+  procedure ChangeFieldAttr(var ESR : ESrecord; FieldID : Word; A : Byte);
+    {-Change the field attribute for the specified field}
+  var
+    FRP : FieldRecPtr;
+  begin
+    FRP := FindFieldID(ESR, FieldID);
+    if FRP <> nil then
+      with FRP^ do begin
+        FieldAttr := MapColor(A);
+        prFieldAttr := FieldAttr;
+      end;
+  end;
+
+  procedure ChangeStringAttr(var ESR : ESrecord; FieldID : Word; A : Byte);
+    {-Change the string attribute for the specified field}
+  var
+    FRP : FieldRecPtr;
+  begin
+    FRP := FindFieldID(ESR, FieldID);
+    if FRP <> nil then
+      with FRP^ do
+        StringAttr := MapColor(A);
+  end;
+
+{$IFDEF FMinus}
+  {$F+}
+{$ENDIF}
+
+  {$IFDEF IncludeChoice}
+  procedure ChoiceConversion(var FR : FieldRec; PostEdit : Boolean);
+    {-Conversion routine for multiple choice fields}
+  begin
+    if not PostEdit then
+      with FR do begin
+        ESchoicePtr := ValidatePtr;
+        IncChoiceRoutine(VarPtr^, FieldID, 0, EditSt^);
+        MergePicture(Picture^, EditSt^, EditSt^, EditFlags);
+      end;
+  end;
+  {$ENDIF}
+
+  procedure StringConversion(var FR : FieldRec; PostEdit : Boolean);
+    {-Conversion routine for strings}
+  begin
+    with FR do
+      if PostEdit then
+        StringPtr(VarPtr)^ := EditSt^
+      else begin
+        if Byte(VarPtr^) > Length(Picture^) then
+          Byte(VarPtr^) := Length(Picture^);
+        EditSt^ := string(VarPtr^);
+        if Length(EditSt^) < Length(Picture^) then
+          MergePicture(Picture^, EditSt^, EditSt^, EditFlags);
+      end;
+  end;
+
+  procedure ArrayConversion(var FR : FieldRec; PostEdit : Boolean);
+    {-Conversion routine for arrays of char}
+  begin
+    with FR do
+      if PostEdit then
+        Move(EditSt^[1], VarPtr^, Length(Picture^))
+      else begin
+        Move(VarPtr^, EditSt^[1], Length(Picture^));
+        EditSt^[0] := Char(Length(Picture^));
+        if Trim(EditSt^) = '' then                             {!!.08}
+          MergePicture(Picture^, EditSt^, EditSt^, EditFlags); {!!.08}
+      end;
+  end;
+
+  procedure CharConversion(var FR : FieldRec; PostEdit : Boolean);
+    {-Conversion routine for characters}
+  var
+    S : string[10];
+  begin
+    with FR do
+      if PostEdit then begin
+        StripPicture(Picture^, EditSt^, S);
+        Char(VarPtr^) := S[1];
+      end
+      else begin
+        EditSt^ := Char(VarPtr^);
+        if Length(EditSt^) < Length(Picture^) then
+          MergePicture(Picture^, EditSt^, EditSt^, EditFlags);
+      end;
+  end;
+
+  procedure BooleanConversion(var FR : FieldRec; PostEdit : Boolean);
+    {-Conversion routine for booleans}
+  const
+    TrueFalse : array[Boolean] of Char = ('F', 'T');
+  var
+    Ch : Char;
+    S : string[10];
+  begin
+    with FR do
+      if PostEdit then begin
+        StripPicture(Picture^, EditSt^, S);
+        Ch := S[1];
+        Boolean(VarPtr^) := (Ch = 'T');
+      end
+      else begin
+        EditSt^ := TrueFalse[Boolean(VarPtr^) = True];
+        if Length(EditSt^) < Length(Picture^) then
+          MergePicture(Picture^, EditSt^, EditSt^, EditFlags);
+      end;
+  end;
+
+  procedure YesNoConversion(var FR : FieldRec; PostEdit : Boolean);
+    {-Conversion routine for yes/no's}
+  const
+    YesOrNo : array[Boolean] of Char = ('N', 'Y');
+  var
+    Ch : Char;
+    S : string[10];
+  begin
+    with FR do
+      if PostEdit then begin
+        StripPicture(Picture^, EditSt^, S);
+        Ch := S[1];
+        Boolean(VarPtr^) := (Ch = 'Y');
+      end
+      else begin
+        EditSt^ := YesOrNo[Boolean(VarPtr^) = True];
+        if Length(EditSt^) < Length(Picture^) then
+          MergePicture(Picture^, EditSt^, EditSt^, EditFlags);
+      end;
+  end;
+
+  procedure LongConversion(var FR : FieldRec; PostEdit : Boolean);
+    {-Conversion routine for longints}
+  var
+    S : string[80];
+  begin
+    with FR do
+      if PostEdit then begin
+        StripPicture(Picture^, EditSt^, S);
+        TrimSpacesPrim(S);
+        if not Str2Long(S, LongInt(VarPtr^)) then
+          LongInt(VarPtr^) := 0;
+      end
+      else
+        MergePicture(Picture^, Long2Str(LongInt(VarPtr^)), EditSt^, EditFlags);
+  end;
+
+  procedure WordConversion(var FR : FieldRec; PostEdit : Boolean);
+    {-Conversion routine for words}
+  var
+    S : string[80];
+    L : LongInt;
+  begin
+    with FR do
+      if PostEdit then begin
+        StripPicture(Picture^, EditSt^, S);
+        TrimSpacesPrim(S);
+        L := Word(VarPtr^);
+        if not Str2Long(S, L) then
+          Word(VarPtr^) := 0
+        else
+          Word(VarPtr^) := Word(L);
+      end
+      else
+        MergePicture(Picture^, Long2Str(Word(VarPtr^)), EditSt^, EditFlags);
+  end;
+
+  procedure IntConversion(var FR : FieldRec; PostEdit : Boolean);
+    {-Conversion routine for integers}
+  var
+    S : string[80];
+    L : LongInt;
+  begin
+    with FR do
+      if PostEdit then begin
+        StripPicture(Picture^, EditSt^, S);
+        TrimSpacesPrim(S);
+        L := Integer(VarPtr^);
+        if not Str2Long(S, L) then
+          Integer(VarPtr^) := 0
+        else
+          Integer(VarPtr^) := Integer(L);
+      end
+      else
+        MergePicture(Picture^, Long2Str(Integer(VarPtr^)), EditSt^, EditFlags);
+  end;
+
+  procedure ByteConversion(var FR : FieldRec; PostEdit : Boolean);
+    {-Conversion routine for bytes}
+  var
+    S : string[80];
+    L : LongInt;
+  begin
+    with FR do
+      if PostEdit then begin
+        StripPicture(Picture^, EditSt^, S);
+        TrimSpacesPrim(S);
+        L := Byte(VarPtr^);
+        if not Str2Long(S, L) then
+          Byte(VarPtr^) := 0
+        else
+          Byte(VarPtr^) := Byte(L);
+      end
+      else
+        MergePicture(Picture^, Long2Str(Byte(VarPtr^)), EditSt^, EditFlags);
+  end;
+
+  procedure ShortConversion(var FR : FieldRec; PostEdit : Boolean);
+    {-Conversion routine for shortints}
+  var
+    S : string[80];
+    L : LongInt;
+  begin
+    with FR do
+      if PostEdit then begin
+        StripPicture(Picture^, EditSt^, S);
+        TrimSpacesPrim(S);
+        L := ShortInt(VarPtr^);
+        if not Str2Long(S, L) then
+          ShortInt(VarPtr^) := 0
+        else
+          ShortInt(VarPtr^) := ShortInt(L);
+      end
+      else
+        MergePicture(Picture^, Long2Str(ShortInt(VarPtr^)), EditSt^, EditFlags);
+  end;
+
+  procedure RealConversion(var FR : FieldRec; PostEdit : Boolean);
+    {-Conversion routine for reals}
+  var
+    S : string;
+    R : Real;
+    Code : Word;
+    Width, Places : Word;
+  begin
+    with FR do
+      if PostEdit then begin
+        StripPicture(Picture^, EditSt^, S);
+        FixRealPrim(S);
+        Val(S, R, Code);
+        if Code <> 0 then
+          R := 0;
+        Real(VarPtr^) := R;
+      end
+      else begin
+        CalcWidthAndPlaces(Picture^, Width, Places, DPlaces);
+        Str(Real(VarPtr^):Width:Places, S);
+        if DPlaces <> 0 then
+          TrimTrailingZeros(S);
+        MergePictureReal(Picture^, S, EditSt^, EditFlags); {!!.09}
+      end;
+  end;
+
+{$IFDEF UseBcd}
+
+  procedure BcdConversion(var FR : FieldRec; PostEdit : Boolean);
+    {-Conversion routine for BCD reals}
+  var
+    S : string;
+    B : BCD;
+    Code : Word;
+    Width, Places : Word;
+  begin
+    with FR do
+      if PostEdit then begin
+        StripPicture(Picture^, EditSt^, S);
+        FixRealPrim(S);
+        ValBCD(S, B, Code);
+        if Code <> 0 then
+          FillChar(B, SizeOf(B), 0);
+        BCD(VarPtr^) := B;
+      end
+      else begin
+        CalcWidthAndPlaces(Picture^, Width, Places, DPlaces);
+        S := StrBCD(BCD(VarPtr^), Width, Places);
+        if DPlaces <> 0 then
+          TrimTrailingZeros(S);
+        MergePictureReal(Picture^, S, EditSt^, EditFlags); {!!.09}
+      end;
+  end;
+
+{$ENDIF}
+
+{$IFOPT N+}
+
+  procedure ExtConversion(var FR : FieldRec; PostEdit : Boolean);
+    {-Conversion routine for extendeds}
+  var
+    S : string;
+    E : Extended;
+    Code : Word;
+    Width, Places : Word;
+  begin
+    with FR do
+      if PostEdit then begin
+        StripPicture(Picture^, EditSt^, S);
+        FixRealPrim(S);
+        Val(S, E, Code);
+        if Code <> 0 then
+          E := 0;
+        Extended(VarPtr^) := E;
+      end
+      else begin
+        CalcWidthAndPlaces(Picture^, Width, Places, DPlaces);
+        Str(Extended(VarPtr^):Width:Places, S);
+        if DPlaces <> 0 then
+          TrimTrailingZeros(S);
+        MergePictureReal(Picture^, S, EditSt^, EditFlags); {!!.09}
+      end;
+  end;
+
+  procedure DblConversion(var FR : FieldRec; PostEdit : Boolean);
+    {-Conversion routine for doubles}
+  var
+    S : string;
+    E : Double;
+    Code : Word;
+    Width, Places : Word;
+  begin
+    with FR do
+      if PostEdit then begin
+        StripPicture(Picture^, EditSt^, S);
+        FixRealPrim(S);
+        Val(S, E, Code);
+        if Code <> 0 then
+          E := 0;
+        Double(VarPtr^) := E;
+      end
+      else begin
+        CalcWidthAndPlaces(Picture^, Width, Places, DPlaces);
+        Str(Double(VarPtr^):Width:Places, S);
+        if DPlaces <> 0 then
+          TrimTrailingZeros(S);
+        MergePictureReal(Picture^, S, EditSt^, EditFlags); {!!.09}
+      end;
+  end;
+
+  procedure SglConversion(var FR : FieldRec; PostEdit : Boolean);
+    {-Conversion routine for singles}
+  var
+    S : string;
+    E : Single;
+    Code : Word;
+    Width, Places : Word;
+  begin
+    with FR do
+      if PostEdit then begin
+        StripPicture(Picture^, EditSt^, S);
+        FixRealPrim(S);
+        Val(S, E, Code);
+        if Code <> 0 then
+          E := 0;
+        Single(VarPtr^) := E;
+      end
+      else begin
+        CalcWidthAndPlaces(Picture^, Width, Places, DPlaces);
+        Str(Single(VarPtr^):Width:Places, S);
+        if DPlaces <> 0 then
+          TrimTrailingZeros(S);
+        MergePictureReal(Picture^, S, EditSt^, EditFlags); {!!.09}
+      end;
+  end;
+
+  procedure CompConversion(var FR : FieldRec; PostEdit : Boolean);
+    {-Conversion routine for comps}
+  var
+    S : string[80];
+    E : Comp;
+    Code : Word;
+    Width, Places : Word;
+  begin
+    with FR do
+      if PostEdit then begin
+        StripPicture(Picture^, EditSt^, S);
+        FixRealPrim(S);
+        Val(S, E, Code);
+        if Code <> 0 then
+          E := 0;
+        Comp(VarPtr^) := E;
+      end
+      else begin
+        CalcWidthAndPlaces(Picture^, Width, Places, 0);
+        Str(Comp(VarPtr^):Width:Places, S);
+        MergePictureReal(Picture^, S, EditSt^, EditFlags); {!!.09}
+      end;
+  end;
+
+{$ENDIF}
+
+  procedure DateConversion(var FR : FieldRec; PostEdit : Boolean);
+    {-Conversion routine for dates}
+  var
+    D : Date;
+  begin
+    with FR do
+      if PostEdit then
+        Date(VarPtr^) := DateStringToDate(Picture^, EditSt^)
+      else
+        EditSt^ := DateToDateString(Picture^, Date(VarPtr^));
+  end;
+
+  procedure DateStConversion(var FR : FieldRec; PostEdit : Boolean);
+    {-Conversion routine for date strings}
+  var
+    D : Date;
+  begin
+    with FR do
+      if PostEdit then begin
+        D := DateStringToDate(Picture^, EditSt^);
+        StringPtr(VarPtr)^ := DateToDateString(Picture^, D);
+      end
+      else begin
+        if Length(String(VarPtr^)) <> EditLen then begin {!!.10}
+          EditSt^ := String(VarPtr^);                    {!!.10}
+          DateStConversion(FR, True);
+        end;                                             {!!.10}
+        EditSt^ := string(VarPtr^);
+      end;
+  end;
+
+  procedure TimeConversion(var FR : FieldRec; PostEdit : Boolean);
+    {-Conversion routine for time variables}
+  begin
+    with FR do
+      if PostEdit then
+        Time(VarPtr^) := TimeStringToTime(Picture^, EditSt^)
+      else
+        EditSt^ := TimeToTimeString(Picture^, Time(VarPtr^));
+  end;
+
+  procedure NestedConversion(var FR : FieldRec; PostEdit : Boolean);
+    {-Conversion routine for strings}
+  begin
+    with FR do
+      if not PostEdit then begin
+        EditSt^[0] := #0;
+        if Length(EditSt^) < Length(Picture^) then
+          MergePicture(Picture^, EditSt^, EditSt^, EditFlags);
+      end;
+  end;
+
+  function ValidateSubfields(SubfieldMask : string;
+                             var FR : FieldRec;
+                             var ErrCode : Byte;
+                             var ErrorSt : StringPtr) : Boolean;
+    {-Validate that subfields in a string meet the requirements of SubfieldMask.
+      Note: This is NOT a regular validation routine. It should be called only
+      by a higher-level validation routine that has a SubfieldMask to give it.}
+  var
+    I : Word;
+    PFlags : PictureFlags;
+    Ch : Char;
+
+    function SubFieldHasBlanks(I : Word) : Boolean;
+      {-Return true if the subfield that contains index I has any blanks}
+    var
+      Start, Stop, J : Word;
+    begin
+      Start := I;
+      while (Start > 1) and PFlags[Start-1] do
+        Dec(Start);
+      Stop := I;
+      while PFlags[Stop+1] do
+        Inc(Stop);
+      for J := Start to Stop do
+        if FR.EditSt^[J] = ' ' then begin
+          SubFieldHasBlanks := True;
+          Exit;
+        end;
+      SubFieldHasBlanks := False;
+    end;
+
+    function WholeFieldIsBlank : Boolean;
+      {-Return true if an entire field is blank}
+    var
+      Start, Stop, J : Word;
+    begin
+      Start := 1;
+      while not PFlags[Start] do
+        Inc(Start);
+      Stop := Length(SubfieldMask);
+      while not PFlags[Stop] do
+        Dec(Stop);
+      for J := Start to Stop do
+        if PFlags[J] and (FR.EditSt^[J] <> ' ') then begin
+          WholeFieldIsBlank := False;
+          Exit;
+        end;
+      WholeFieldIsBlank := True;
+    end;
+
+  begin
+    ValidateSubfields := True;
+    with FR do begin
+      {initialize flags table}
+      InitPictureFlags(Picture^, PFlags);
+
+      {modify flags table based on SubfieldMask}
+      for I := 1 to Length(SubfieldMask) do
+        case SubfieldMask[I] of
+          ReqdChar, PartialChar, UnlessChar : {no change};
+          else PFlags[I] := False;
+        end;
+
+      {assume failure}
+      ValidateSubfields := False;
+
+      for I := 1 to Length(Picture^) do
+        if PFlags[I] then begin
+          Ch := EditSt^[I];
+          case SubfieldMask[I] of
+            ReqdChar :
+              if (Ch = ' ') then begin
+                ErrCode := BlanksError;
+                ErrorSt := @BlanksErrorMsg;
+                Exit;
+              end;
+            PartialChar :
+              if (Ch <> ' ') and SubFieldHasBlanks(I) then begin
+                ErrCode := PartialError;
+                ErrorSt := @PartialErrorMsg;
+                Exit;
+              end;
+            UnlessChar :
+              if (Ch = ' ') and not WholeFieldIsBlank then begin
+                ErrCode := PartialError;
+                ErrorSt := @PartialErrorMsg;
+                Exit;
+              end;
+          end;
+        end;
+    end;
+
+    {if we get to here we succeeded}
+    ValidateSubfields := True;
+  end;
+
+  function ValidateChar(var FR : FieldRec;
+                        var ErrCode : Byte;
+                        var ErrorSt : StringPtr) : Boolean;
+    {-Validate a field of type char}
+  const
+    ErrorMsg : string[28] = 'Character not in valid range';
+  var
+    Ch : Char;
+    S : string[10];
+  begin
+    with FR do begin
+      {convert EditSt^ to a char}
+      StripPicture(Picture^, EditSt^, S);
+      Ch := S[1];
+
+      {check the range}
+      if (Ch < RangeLo.rtCh) or (Ch > RangeHi.rtCh) then begin
+        ValidateChar := False;
+        ErrCode := RangeError;
+        ErrorSt := @ErrorMsg;
+      end
+      else
+        ValidateChar := True;
+    end;
+  end;
+
+  function ValidateNoBlanks(var FR : FieldRec;
+                            var ErrCode : Byte;
+                            var ErrorSt : StringPtr) : Boolean;
+    {-Validate that no usable fields in a string contain spaces}
+  var
+    I : Word;
+    PFlags : PictureFlags;
+  begin
+    {assume success}
+    ValidateNoBlanks := True;
+
+    with FR do begin
+      {initialize flags table}
+      InitPictureFlags(Picture^, PFlags);
+
+      {check for blanks}
+      for I := 1 to Length(Picture^) do
+        if PFlags[I] and (EditSt^[I] = ' ') then begin
+          ValidateNoBlanks := False;
+          ErrCode := BlanksError;
+          ErrorSt := @BlanksErrorMsg;
+          Exit;
+        end;
+    end;
+  end;
+
+  function ValidateNotPartial(var FR : FieldRec;
+                              var ErrCode : Byte;
+                              var ErrorSt : StringPtr) : Boolean;
+    {-Validate that no usable fields in a string contain spaces unless all do}
+  var
+    I : Word;
+    PFlags : PictureFlags;
+    BlankIsError : Boolean;
+  begin
+    {assume success}
+    ValidateNotPartial := True;
+
+    with FR do begin
+      {initialize flags table}
+      InitPictureFlags(Picture^, PFlags);
+
+      {check for blanks}
+      BlankIsError := False;
+      for I := 1 to Length(Picture^) do
+        if PFlags[I] then
+          if (EditSt^[I] <> ' ') then
+            BlankIsError := True
+          else if BlankIsError then begin
+            ValidateNotPartial := False;
+            ErrCode := PartialError;
+            ErrorSt := @PartialErrorMsg;
+            Exit;
+          end;
+    end;
+  end;
+
+  function ValidateBoolean(var FR : FieldRec;
+                           var ErrCode : Byte;
+                           var ErrorSt : StringPtr) : Boolean;
+    {-Validate a field of type Boolean}
+  const
+    ErrorMsg : string[30] = 'Valid entries are "T" and "F".';
+  var
+    Ch : Char;
+    S : string[10];
+  begin
+    with FR do begin
+      {convert EditSt^ to a char}
+      StripPicture(Picture^, EditSt^, S);
+      Ch := S[1];
+
+      {check the range}
+      if not(Ch in BooleanSet) then begin
+        ValidateBoolean := False;
+        ErrCode := RangeError;
+        ErrorSt := @ErrorMsg;
+      end
+      else
+        ValidateBoolean := True;
+    end;
+  end;
+
+  function ValidateYesNo(var FR : FieldRec;
+                         var ErrCode : Byte;
+                         var ErrorSt : StringPtr) : Boolean;
+    {-Validate a field of type YesNo}
+  const
+    ErrorMsg : string[30] = 'Valid entries are "Y" and "N".';
+  var
+    Ch : Char;
+    S : string[10];
+  begin
+    with FR do begin
+      {convert EditSt^ to a char}
+      StripPicture(Picture^, EditSt^, S);
+      Ch := S[1];
+
+      {check the range}
+      if not(Ch in YesNoSet) then begin
+        ValidateYesNo := False;
+        ErrCode := RangeError;
+        ErrorSt := @ErrorMsg;
+      end
+      else
+        ValidateYesNo := True;
+    end;
+  end;
+
+  function ValidateLong(var FR : FieldRec;
+                        var ErrCode : Byte;
+                        var ErrorSt : StringPtr) : Boolean;
+    {-Validate a field of type longint/word/integer/byte/shortint}
+  var
+    L : LongInt;
+    S : string[80];
+    Code : Word;
+    Width, Places : Word;
+  begin
+    ValidateLong := False;
+    with FR do begin
+      {convert EditSt^ to a longint}
+      StripPicture(Picture^, EditSt^, S);
+      TrimSpacesPrim(S);
+      Val(S, L, Code);
+
+      {format OK?}
+      if Code <> 0 then begin
+        ErrorSt := @InvalidFormat;
+        ErrCode := FormatError;
+      end
+      else if (L < RangeLo.rtL) or (L > RangeHi.rtL) then begin
+        ErrorSt := @OutOfRange;
+        ErrCode := RangeError;
+      end
+      else
+        ValidateLong := True;
+    end;
+  end;
+
+  function ValidateReal(var FR : FieldRec;
+                        var ErrCode : Byte;
+                        var ErrorSt : StringPtr) : Boolean;
+    {-Validate a field of type real}
+  var
+    R : Real;
+    S1, S2 : string[80];
+    Code : Word;
+    Width, Places : Word;
+  begin
+    ValidateReal := False;
+    with FR do begin
+      {convert EditSt^ to a real}
+      StripPicture(Picture^, EditSt^, S1);
+      FixRealPrim(S1);
+      Val(S1, R, Code);
+
+      {format OK?}
+      if Code <> 0 then begin
+        ErrorSt := @InvalidFormat;
+        ErrCode := FormatError;
+      end
+      else if (R < RangeLo.rtR) or (R > RangeHi.rtR) then begin
+        ErrorSt := @OutOfRange;
+        ErrCode := RangeError;
+      end
+      else
+        ValidateReal := True;
+    end;
+  end;
+
+{$IFDEF UseBcd}
+
+  function ValidateBCD(var FR : FieldRec;
+                       var ErrCode : Byte;
+                       var ErrorSt : StringPtr) : Boolean;
+    {-Validate a field of type BCD}
+  var
+    B : BCD;
+    S1, S2 : string[80];
+    Code : Word;
+    Width, Places : Word;
+  begin
+    ValidateBCD := False;
+    with FR do begin
+      {convert EditSt^ to a real}
+      StripPicture(Picture^, EditSt^, S1);
+      FixRealPrim(S1);
+      ValBCD(S1, B, Code);
+
+      {format OK?}
+      if Code <> 0 then begin
+        ErrorSt := @InvalidFormat;
+        ErrCode := FormatError;
+      end
+      else if LessBCD(B, RangeLo.rtBCD) or GreaterBCD(B, RangeHi.rtBCD) then begin
+        ErrorSt := @OutOfRange;
+        ErrCode := RangeError;
+      end
+      else
+        ValidateBCD := True;
+    end;
+  end;
+
+{$ENDIF}
+
+{$IFOPT N+}
+
+  function ValidateExt(var FR : FieldRec;
+                       var ErrCode : Byte;
+                       var ErrorSt : StringPtr) : Boolean;
+    {-Validate a field of type extended/double/single/comp}
+  var
+    E : Extended;
+    S1, S2 : string;
+    Code : Word;
+    Width, Places : Word;
+  begin
+    ValidateExt := False;
+    with FR do begin
+      {convert EditSt^ to an extended}
+      StripPicture(Picture^, EditSt^, S1);
+      FixRealPrim(S1);
+      Val(S1, E, Code);
+
+      {format OK?}
+      if Code <> 0 then begin
+         ErrorSt := @InvalidFormat;
+         ErrCode := FormatError;
+      end
+      else if (E < RangeLo.rtE) or (E > RangeHi.rtE) then begin
+        ErrorSt := @OutOfRange;
+        ErrCode := RangeError;
+      end
+      else
+        ValidateExt := True;
+    end;
+  end;
+
+{$ENDIF}
+
+  function ValidateDate(var FR : FieldRec;
+                        var ErrCode : Byte;
+                        var ErrorSt : StringPtr) : Boolean;
+    {-Validate a field of type date}
+  const
+    InvalidDate : string[13] = 'Invalid date.';
+    DateOutOfRange : string[24] = 'Date not in valid range.';
+  var
+    D : Date;
+    Day, Month, Year : Integer;
+  begin
+    ValidateDate := False;
+    with FR do begin
+      {if range high is 0, allow blank entry}
+      if RangeHi.rtDat = MinDate then
+        if DateStringIsBlank(Picture^, EditSt^) then begin
+          ValidateDate := True;
+          Exit;
+        end;
+
+      {convert EditSt^ to a date}
+      D := DateStringToDate(Picture^, EditSt^);
+
+      {format OK?}
+      if D = BadDate then begin
+        ErrorSt := @InvalidDate;
+        ErrCode := FormatError;
+      end
+      else if (D < RangeLo.rtDat) or (D > RangeHi.rtDat) then begin
+        {OK if range high is zero}
+        ValidateDate := (RangeHi.rtDat = MinDate);
+        ErrorSt := @DateOutOfRange;
+        ErrCode := RangeError;
+      end
+      else
+        ValidateDate := True;
+    end;
+  end;
+
+  function ValidateDateSt(var FR : FieldRec;
+                          var ErrCode : Byte;
+                          var ErrorSt : StringPtr) : Boolean;
+    {-Validate a field of type date string}
+  const
+    InvalidDate : string[13] = 'Invalid date.';
+  begin
+    with FR do begin
+      {extract day, month, year from EditSt^}
+      if DateStringIsBlank(Picture^, EditSt^) then
+        ValidateDateSt := True
+      else if DateStringToDate(Picture^, EditSt^) <> BadDate then
+        ValidateDateSt := True
+      else begin
+        ValidateDateSt := False;
+        ErrorSt := @InvalidDate;
+        ErrCode := FormatError;
+      end;
+    end;
+  end;
+
+  function ValidateTime(var FR : FieldRec;
+                        var ErrCode : Byte;
+                        var ErrorSt : StringPtr) : Boolean;
+    {-Validate a field of type time}
+  const
+    InvalidTime : string[13] = 'Invalid time.';
+    TimeOutOfRange : string[24] = 'Time not in valid range.';
+  var
+    T : Time;
+    H, M, S : Integer;
+  begin
+    ValidateTime := True;
+    with FR do begin
+      {if range high is 0, allow all blanks}
+      if RangeHi.rtL = MinTime then
+        if not TimeStringToHMS(Picture^, EditSt^, H, M, S) then
+          if (H = -1) and (M = -1) and ((S = -1) or (S = 0)) then begin
+            ValidateTime := True;
+            Exit;
+          end;
+
+      {format OK?}
+      T := TimeStringToTime(Picture^, EditSt^);
+      if T = BadTime then begin
+        ValidateTime := False;
+        ErrorSt := @InvalidTime;
+        ErrCode := FormatError;
+      end
+      else if (RangeLo.rtL <> RangeHi.rtL) then
+        if (T < RangeLo.rtL) or (T > RangeHi.rtL) then begin
+          ValidateTime := False;
+          ErrorSt := @TimeOutOfRange;
+          ErrCode := RangeError;
+        end
+    end;
+  end;
+
+{$IFDEF FMinus}
+  {$F-}
+{$ENDIF}
+
+  function ValidField(var Picture, St : String) : Byte;
+    {-Check an entire field for valid characters. If error is found, result has
+      offset into the string so that cursor can be positioned on it.}
+  var
+    I : Byte;
+    Flags : PictureFlags;
+  begin
+    {initialize flags table}
+    InitPictureFlags(Picture, Flags);
+
+    ValidField := 0;
+    for I := 1 to Length(Picture) do
+      if Flags[I] then
+        if not CharOK(Picture[I], St[I], False) then begin
+          ValidField := I;
+          Exit;
+        end;
+  end;
+
+

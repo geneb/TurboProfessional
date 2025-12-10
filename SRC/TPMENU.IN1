@@ -1,0 +1,1818 @@
+  {$IFOPT F-}
+    {$DEFINE FMinus}
+  {$ENDIF}
+
+  {Implementation constants, types, variables}
+
+type
+  CommandType =
+  (Mup,                      {Select the item above current}
+    Mdown,                   {Select the item below current}
+    MsubUp,                  {Select the submenu above current}
+    MsubDown,                {Select the submenu below current}
+    Mright,                  {Select the item to the right of current}
+    Mleft,                   {Select the item to the left of current}
+    MsubLeft,                {Select the submenu to the left of current}
+    MsubRight,               {Select the submenu to the right of current}
+    Mhome,                   {Select first item}
+    Mend,                    {Select last item}
+    Mexit,                   {Exit the menu system}
+    Mselect,                 {Select the next submenu or item}
+    Mdeselect,               {Deselect the current submenu}
+    Mhelp,                   {Call help routine}
+    Mnul                     {No command}
+    );
+
+var
+  PrevMenuStatus : MenuStatusType; {Error status}
+  CurrentUserFunc : Pointer; {Pointer to item display function currently in use}
+  CurrMenu : Menu;           {Menu currently being built}
+  MStack : MenuStackP;       {Stack used by SearchSubMenu}
+  ItemFound : Boolean;       {Set true when SearchSubMenu finds item}
+  ItemToFind : MenuKey;      {Item that SearchSubMenu is searching for}
+
+  procedure CheckMenuStatus(Mstatus : MenuStatusType);
+    {-Check menustatus, report error and halt}
+  begin
+    case Mstatus of
+      MenuSuccess : Exit;
+      MenuNoMem : WriteLn('insufficient memory to allocate menu');
+      MenuFileNotFound : WriteLn('Menu library file not found');
+      MenuNotLibraryFile : WriteLn('File is not a library file');
+      MenuIdNotFound : WriteLn('Specified library element not found');
+      MenuFileCreationError : WriteLn('Unable to create library file');
+      MenuFileReadError : WriteLn('Error while reading menu file');
+      MenuFileWriteError : WriteLn('Error while writing menu file');
+      MenuFileCorrupt : WriteLn('Menu file is corrupt');
+      MenuLibraryFull : WriteLn('No room in library index to add a new entry');
+    end;
+    Halt(1);
+  end;
+
+  function MenuStatus : MenuStatusType;
+    {-Return status of previous operation}
+  begin
+    MenuStatus := PrevMenuStatus;
+    {Reset previous status}
+    PrevMenuStatus := MenuSuccess;
+  end;
+
+  function NewMenu(SelectKeys : MenuCharSet; UserFunc : Pointer) : Menu;
+    {-Initialize a new menu system and return a pointer to it}
+  begin
+    if PrevMenuStatus <> MenuSuccess then
+      Exit;
+
+    {Allocate the space}
+    if not GetMemCheck(CurrMenu, SizeOf(MenuRec)) then
+      PrevMenuStatus := MenuNoMem
+    else begin
+      {Initialize the fields to nil}
+      FillChar(CurrMenu^, SizeOf(MenuRec), 0);
+      {Initialize the selection keys}
+      CurrMenu^.SelectKeys := SelectKeys;
+      {Store the UserFunc pointer}
+      CurrMenu^.UserFunc := UserFunc;
+      NewMenu := Menu(CurrMenu);
+    end;
+  end;
+
+  procedure SetMenuSelectKeys(Mnu : Menu; Skeys : MenuCharSet);
+    {-Change the select key set of existing menu system as specified}
+  begin
+    with Mnu^ do
+      SelectKeys := Skeys;
+  end;
+
+  procedure PushSubMenu(Mnu : Menu; SubMnu : SubMenuP);
+    {-Put submenu onto active stack of the menu}
+  var
+    P : MenuStackP;
+  begin
+    if PrevMenuStatus <> MenuSuccess then
+      Exit;
+    {Allocate space for stack record}
+    if not GetMemCheck(P, SizeOf(MenuStackRec)) then
+      PrevMenuStatus := MenuNoMem
+    else
+      with Mnu^ do begin
+        {Initialize the root if this is the first submenu}
+        if Root = nil then
+          Root := SubMnu;
+        {Specified menu is now active}
+        Active := SubMnu;
+        {Link in the new top of stack}
+        P^.Top := SubMnu;
+        P^.Next := Stack;
+        Stack := P;
+      end;
+  end;
+
+  procedure PopSubMenu(Mnu : Menu);
+    {-Remove submenu from active stack}
+  var
+    P : MenuStackP;
+  begin
+    if PrevMenuStatus <> MenuSuccess then
+      Exit;
+    if Mnu <> nil then                                                 {!!.20}
+      with Mnu^ do
+        if Stack <> nil then begin
+          P := Stack^.Next;
+          {Deallocate space}
+          FreeMemCheck(Stack, SizeOf(MenuStackRec));
+          Stack := P;
+          {Make the current top of stack active}
+          if Stack = nil then    {!!.20}
+            Active := nil        {!!.20}
+          else                   {!!.20}
+            Active := Stack^.Top;
+        end;
+  end;
+
+  procedure PopSubLevel;
+    {-Pop current submenu while building a new menu system}
+  begin
+    PopSubMenu(CurrMenu);
+  end;
+
+  procedure ClearMenuStack(Mnu : Menu);
+    {-Clear the active stack}
+  begin
+    while Mnu^.Stack <> nil do
+      PopSubMenu(Mnu);
+  end;
+
+  procedure Clip(SubMnu : SubMenuP; var XH, YH : Byte);
+    {-Assure dimensions don't exceed screen}
+  var
+    Max : Byte;
+  begin
+    with SubMnu^ do begin
+      Max := ScreenWidth-2*ShadowDelta[Draw.Shadowed];
+      if XH > Max then
+        XH := Max;
+      Max := ScreenHeight-ShadowDelta[Draw.Shadowed];
+      if YH > Max then
+        YH := Max;
+    end;
+  end;
+
+  procedure SubMenu(XLP, YLP, YhelpP : Byte;
+                    OrientP : Orientation;
+                    FrameP : FrameArray;
+                    ColorsP : MenuColorArray;
+                    HeaderStr : string
+                    );
+    {-Add a submenu to currently active item and submenu of root menu}
+  var
+    P : SubMenuP;
+  begin
+    if PrevMenuStatus <> MenuSuccess then
+      Exit;
+
+    {Allocate space for the submenu}
+    if not GetMemCheck(P, SizeOf(SubMenuRec)) then
+      PrevMenuStatus := MenuNoMem
+
+    else begin
+      {Initialize the fields of the submenu}
+      FillChar(P^, SizeOf(SubMenuRec), 0);
+
+      with P^, Draw do begin
+
+        {Store the header string}
+        if HeaderStr = '' then
+          Header := nil
+        else begin
+          Header := StringToHeap(HeaderStr);
+          if Header = nil then begin
+            PrevMenuStatus := MenuNoMem;
+            Exit;
+          end;
+        end;
+
+        {Initialize simple fields}
+        Orient := OrientP;
+        Frame := FrameP;
+        LotusStyle := (FrameP = LotusFrame);
+        Framed := not LotusStyle;
+        XL := XLP;
+        XL1 := XLP;
+        YL := YLP;
+        YL1 := YLP;
+        YHelp := YhelpP;
+
+        {Take the colors as given}
+        Colors := ColorsP;
+
+        {Mapped colors used for exploding and shadowed frames}
+        FAttr := MapColor(Colors[FrameColor]);
+        WAttr := MapColor(Colors[BodyColor]);
+        HAttr := MapColor(Colors[HeaderColor]);
+        {$IFDEF Tpro5Menu}
+        SAttr := MapColor(Colors[ShadowColor]);
+        {$ELSE}
+        SAttr := 0;
+        {$ENDIF}
+
+        {Set defaults for other fields}
+        Exploding := False;
+        Shadowed := False;
+        Noisy := False;
+        ExploDelay := 15;
+        ShadowM := BigShadow;
+
+        {Automatic window sizing}
+        {Space for two vertical bars plus two padding spaces}
+        XH := XL-1+4*FrameDelta[LotusStyle];
+
+        {Space for two horizontal bars}
+        YH := YL+2*FrameDelta[LotusStyle];
+        if Orient = Vertical then
+          Dec(YH);
+
+        {Assure dimensions don't exceed screen}
+        Clip(P, XH, YH);
+        XH1 := XH;
+        YH1 := YH;
+      end;
+
+      {Link to parent menu}
+      with CurrMenu^ do
+        if Active <> nil then
+          Active^.Items.Current^.Sub := P;
+
+      {Push submenu onto active stack of submenus}
+      PushSubMenu(CurrMenu, P);
+    end;
+  end;
+
+  procedure MenuItemPtr(NamePtr : Pointer;
+                        DisplayPosP : Byte;
+                        SelectPosP : Byte;
+                        KeyP : MenuKey;
+                        HelpPtr : Pointer
+                        );
+    {-Add an item to currently active menu of root menu. name is not
+      allocated on heap}
+  var
+    P : ItemP;
+    MinH : Byte;
+  begin
+    if PrevMenuStatus <> MenuSuccess then
+      Exit;
+
+    {Allocate space for the item}
+    if not GetMemCheck(P, SizeOf(ItemRec)) then
+      PrevMenuStatus := MenuNoMem
+
+    else begin
+      {Initialize its fields}
+      with P^ do begin
+        Name := NamePtr;
+        OnHeap := False;
+        DisplayPos := DisplayPosP;
+        SelectPos := SelectPosP;
+        Key := KeyP;
+        Sub := nil;
+        Help := HelpPtr;
+        {$IFDEF Tpro5Menu}
+        Enabled := True;
+        {$ENDIF}
+      end;
+
+      with CurrMenu^.Active^, Draw do begin
+
+        {Connect it to the linked list of items, after the current selection}
+        with Items do begin
+          if Current = nil then begin
+            {First item in list}
+            P^.Prev := nil;
+            P^.Next := nil;
+            First := P;
+            Last := P;
+          end else begin
+            {Link after current}
+            P^.Prev := Current;
+            P^.Next := Current^.Next;
+            if Current^.Next <> nil then
+              Current^.Next^.Prev := P;
+            Current^.Next := P;
+            if Current = Last then
+              Last := P;
+          end;
+          Current := P;
+        end;
+
+        {Handle automatic window sizing}
+        case Orient of
+          Horizontal :
+            with Items.Last^ do
+              MinH := 3*FrameDelta[LotusStyle]+XL-2+DisplayPos+Byte(Name^);
+          Vertical :
+            begin
+              {Add space for the new item}
+              MinH := YL-1+2*FrameDelta[LotusStyle]+DisplayPosP;
+              if YH < MinH then
+                YH := MinH;
+              with Items.Current^ do
+                MinH := XL-1+Byte(Name^)+4*FrameDelta[LotusStyle];
+            end;
+        end;
+        if XH < MinH then
+          XH := MinH;
+
+        {Assure dimensions don't exceed screen}
+        Clip(CurrMenu^.Active, XH, YH);
+        XH1 := XH;
+        YH1 := YH;
+      end;
+    end;
+  end;
+
+  procedure MenuWidth(Width : Byte);
+    {-Set width of submenu currently being built}
+  begin
+    if (PrevMenuStatus <> MenuSuccess) or (CurrMenu = nil) then
+      Exit;
+    with CurrMenu^.Active^, Draw do begin
+      XH := XL+Width-1;
+      {Assure dimensions don't exceed screen}
+      Clip(CurrMenu^.Active, XH, YH);
+      XH1 := XH;
+    end;
+  end;
+
+  procedure MenuHeight(Height : Byte);
+    {-Set height of submenu currently being built}
+  begin
+    if (PrevMenuStatus <> MenuSuccess) or (CurrMenu = nil) then
+      Exit;
+    with CurrMenu^.Active^, Draw do begin
+      YH := YL+Height-1;
+      {Assure dimensions don't exceed screen}
+      Clip(CurrMenu^.Active, XH, YH);
+      YH1 := YH;
+    end;
+  end;
+
+  procedure MenuMode(Explode, Shadow, Noise : Boolean);
+    {-Set mode of submenu currently being built}
+  begin
+    if (PrevMenuStatus <> MenuSuccess) or (CurrMenu = nil) then
+      Exit;
+    with CurrMenu^.Active^.Draw do begin
+      Exploding := Explode;
+      Shadowed := Shadow;
+      Noisy := Noise;
+      ShadowM := ShadowMode;
+    end;
+  end;
+
+  procedure SetSubMenuMode(SubMnu : SubMenuP; Explode, Shadow, Noise : Boolean);
+    {-Change display mode of submenu and its children}
+  var
+    P : ItemP;
+  begin
+    with SubMnu^ do begin
+      {Change this submenu}
+      with Draw do begin
+        Exploding := Explode;
+        Shadowed := Shadow;
+        Noisy := Noise;
+        ShadowM := ShadowMode;
+      end;
+
+      {Scan the list of items}
+      P := Items.First;
+      while P <> nil do begin
+        with P^ do
+          if Sub <> nil then
+            {Change this item's submenu}
+            SetSubMenuMode(Sub, Explode, Shadow, Noise);
+        P := P^.Next;
+      end;
+    end;
+  end;
+
+  procedure SetMenuMode(Mnu : Menu; Explode, Shadow, Noise : Boolean);
+    {-Change display mode of an entire menu system}
+  begin
+    if PrevMenuStatus <> MenuSuccess then
+      Exit;
+    SetSubMenuMode(Mnu^.Root, Explode, Shadow, Noise);
+  end;
+
+  procedure SetSubMenuDelay(SubMnu : SubMenuP; ExpDelay : Word);
+    {-Change display mode of submenu and its children}
+  var
+    P : ItemP;
+  begin
+    with SubMnu^ do begin
+      {Change this submenu}
+      Draw.ExploDelay := ExpDelay;
+
+      {Scan the list of items}
+      P := Items.First;
+      while P <> nil do begin
+        with P^ do
+          if Sub <> nil then
+            {Change this item's submenu}
+            SetSubMenuDelay(Sub, ExpDelay);
+        P := P^.Next;
+      end;
+    end;
+  end;
+
+  procedure SetMenuDelay(Mnu : Menu; ExpDelay : Word);
+    {-Change explosion delay for entire menu system}
+  begin
+    if PrevMenuStatus <> MenuSuccess then
+      Exit;
+    SetSubMenuDelay(Mnu^.Root, ExpDelay);
+  end;
+
+  procedure MenuItem(NameStr : string;
+                     DisplayPosP : Byte;
+                     SelectPosP : Byte;
+                     KeyP : MenuKey;
+                     HelpStr : string);
+    {-Add an item to currently active menu of root menu.
+      Name space is allocated on heap}
+  var
+    NamePtr : Pointer;
+    HelpPtr : Pointer;
+  begin
+    if PrevMenuStatus <> MenuSuccess then
+      Exit;
+
+    {Allocate heap space for the name and help}
+    NamePtr := StringToHeap(NameStr);
+    if NamePtr = nil then begin
+      PrevMenuStatus := MenuNoMem;
+      Exit;
+    end;
+    HelpPtr := StringToHeap(HelpStr);
+    if HelpPtr = nil then begin
+      PrevMenuStatus := MenuNoMem;
+      Exit;
+    end;
+
+    {Add item to menu structure}
+    MenuItemPtr(NamePtr, DisplayPosP, SelectPosP, KeyP, HelpPtr);
+
+    {Note that the item is allocated on the heap}
+    CurrMenu^.Active^.Items.Current^.OnHeap := True;
+  end;
+
+  procedure DisposeSubMenu(var SubMnu : SubMenuP);
+    {-Dispose of submenu and its children}
+  var
+    P, N : ItemP;
+  begin
+    with SubMnu^ do begin
+
+      {Dispose header string}
+      if Header <> nil then
+        DisposeString(Header);
+
+      {Scan the list of items}
+      P := Items.First;
+      while P <> nil do begin
+        with P^ do begin
+          if OnHeap then begin
+            {Dispose heap space for item name and help}
+            DisposeString(Name);
+            DisposeString(Help);
+          end;
+          if Sub <> nil then begin
+            {Dispose of this item's submenu}
+            DisposeSubMenu(Sub);
+            Sub := nil;
+          end;
+          N := Next;
+        end;
+        {Dispose of this item}
+        FreeMemCheck(P, SizeOf(ItemRec));
+        {Get next item}
+        P := N;
+      end;
+    end;
+
+    {Dispose of the submenu itself}
+    FreeMemCheck(SubMnu, SizeOf(SubMenuRec));
+    SubMnu := nil;
+  end;
+
+  procedure DisposeMenu(Mnu : Menu);
+    {-Dispose of all menu heap space}
+  begin
+    if (PrevMenuStatus <> MenuSuccess) or (Mnu = nil) then
+      Exit;
+
+    with Mnu^ do begin
+      if Visible then
+        {Erase the menu first}
+        EraseMenu(Mnu, False);
+      {Get rid of all submenus recursively}
+      DisposeSubMenu(Root);
+    end;
+
+    {Get rid of main menu structure}
+    FreeMemCheck(Mnu, SizeOf(MenuRec));
+  end;
+
+  procedure ResetSubMenu(SubMnu : SubMenuP);
+    {-Set submenu selection to first item}
+  var
+    P : ItemP;
+  begin
+    with SubMnu^ do begin
+      {Reset current item to first item}
+      Items.Current := Items.First;
+      {Scan the list of items}
+      P := Items.First;
+      while P <> nil do begin
+        with P^ do
+          if Sub <> nil then
+            {Reset this item's submenu}
+            ResetSubMenu(Sub);
+        P := P^.Next;
+      end;
+    end;
+  end;
+
+  procedure ResetMenu(Mnu : Menu);
+    {-Set all selections to first item}
+  begin
+    if PrevMenuStatus <> MenuSuccess then
+      Exit;
+    {Reset all submenus}
+    ResetSubMenu(Mnu^.Root);
+  end;
+
+  function CallUserFunc(S : string; Key : MenuKey) : string;
+    {-Call the user-supplied function to modify S}
+  inline($FF/$1E/CurrentUserFunc); {CALL DWORD PTR [CurrentUserFunc]}
+
+  procedure HelpProc(HelpFor : Byte; IDPtr : Pointer; HelpIndex : Word);
+    {-Allow user to provide help for item}
+  inline($FF/$1E/MenuHelpPtr); {CALL DWORD PTR [MenuHelpPtr]}
+
+  procedure GetRawItem(SubMnu : SubMenuP; Item : ItemP;
+                       var S : string;
+                       var Row, Col, HiPos : Word);
+    {-Return raw name and position for item}
+  begin
+    if Item = nil then begin                                          {!!.20}
+      S := '';                                                        {!!.20}
+      Row := 1;                                                       {!!.20}
+      Col := 1;                                                       {!!.20}
+      HiPos := 1;                                                     {!!.20}
+    end                                                               {!!.20}
+    else with SubMnu^, Item^ do                                       {!!.20}
+      if Orient = Vertical then begin
+        if LotusStyle then
+          S := Pad(StringFromHeap(Name), XH-XL+1)
+        else
+          S := Pad(' '+StringFromHeap(Name), XH-XL-1);
+        HiPos := SelectPos+FrameDelta[LotusStyle];
+        Row := YL+DisplayPos-1+FrameDelta[LotusStyle];
+        Col := XL+FrameDelta[LotusStyle];
+      end else begin
+        S := StringFromHeap(Name);
+        HiPos := SelectPos;
+        Row := YL+FrameDelta[LotusStyle];
+        Col := XL+DisplayPos-1+FrameDelta[LotusStyle];
+      end;
+  end;
+
+  procedure DrawItem(SubMnu : SubMenuP; Item : ItemP; UserFunc : Pointer);
+    {-Draw one item in a submenu}
+  var
+    HiPos : Word;
+    Row : Word;
+    Col : Word;
+    S : string;
+    SaveMouseOn : Boolean;
+  begin
+    if Item = nil then exit;                                          {!!.20}
+
+    with SubMnu^, Item^ do begin
+
+      {Prepare name string and positioning}
+      GetRawItem(SubMnu, Item, S, Row, Col, HiPos);
+
+      {Don't write off edge of screen}
+      if (Row > ScreenHeight) or (Col > ScreenWidth) then
+        Exit;
+
+      {Call a user supplied routine to customize the displayed string}
+      if UserFunc <> nil then begin
+        CurrentUserFunc := UserFunc;
+        S := CallUserFunc(S, Key);
+      end;
+
+      {Don't write off edge of screen}
+      if Col+Length(S) > ScreenWidth+1 then
+        S[0] := Chr(ScreenWidth+1-Col);
+
+      {$IFDEF UseMouse}
+      SaveMouseOn := MouseCursorOn;
+      if SaveMouseOn then
+        HideMouse;
+      {$ENDIF}
+
+      {Write to the screen}
+      {$IFDEF Tpro5Menu}
+      if not Enabled then
+        {Item is not selectable, write in a different color}
+        FastWrite(S, Row, Col, MapColor(Colors[DisabledColor])) {!!.22}
+      else
+        {$ENDIF}
+        if Item = Items.Current then begin
+          {Item is currently selected}
+          FastWrite(S, Row, Col, MapColor(Colors[SelectColor]));
+          {Move the cursor to the start of the item}
+          GoToXYAbs(Col, Row);
+          {Draw help row if specified}
+          if YHelp <> 0 then begin
+            S := Pad(StringFromHeap(Help), ScreenWidth);
+            FastWrite(S, YHelp, 1, MapColor(Colors[HelpColor]));
+          end;
+
+        end else if SelectPos = 0 then
+          {No highlighted character to display}
+          FastWrite(S, Row, Col, MapColor(Colors[BodyColor]))
+
+        else begin
+          {Highlighted character to display}
+          FastWrite(Copy(S, 1, HiPos-1), Row, Col, MapColor(Colors[BodyColor]));
+          FastWrite(S[HiPos], Row, Col+HiPos-1, MapColor(Colors[HiliteColor]));
+          FastWrite(Copy(S, HiPos+1, Length(S)), Row, Col+HiPos, MapColor(Colors[BodyColor]));
+        end;
+
+      {$IFDEF UseMouse}
+      if SaveMouseOn then
+        ShowMouse;
+      {$ENDIF}
+    end;
+  end;
+
+  procedure ClearWindow(XL, YL, XH, YH, Attr : Byte);
+    {-Clear a region with specified attribute}
+  var
+    WordsPerRow : Word;
+    Row : Word;
+    SaveMouseOn : Boolean;
+    Span : string;
+  begin
+    {$IFDEF UseMouse}
+    SaveMouseOn := MouseCursorOn;
+    if SaveMouseOn then
+      HideMouse;
+    {$ENDIF}
+    WordsPerRow := XH-XL+1;
+    Span[0] := Chr(WordsPerRow);
+    FillChar(Span[1], WordsPerRow, ' ');
+    for Row := YL to YH do
+      FastWrite(Span, Row, XL, Attr);
+    {$IFDEF UseMouse}
+    if SaveMouseOn then
+      ShowMouse;
+    {$ENDIF}
+  end;
+
+  procedure DrawFrame(XL, YL, XH, YH, Attr : Byte; Frame : FrameArray);
+    {-Draw a frame around a window}
+  var
+    SaveMouseOn : Boolean;
+  begin
+    {$IFDEF UseMouse}
+    SaveMouseOn := MouseCursorOn;
+    if SaveMouseOn then
+      HideMouse;
+    {$ENDIF}
+    FrameChars := Frame;
+    FrameWindow(XL, YL, XH, YH, Attr, Attr, '');
+    {$IFDEF UseMouse}
+    if SaveMouseOn then
+      ShowMouse;
+    {$ENDIF}
+  end;
+
+  {$IFDEF Tpro5Menu}
+  procedure SetCurrentToNextEnabledItem(SubMnu : SubMenuP);
+    {-Look in list of items for submenu for next available enabled item}
+  var
+    Item : ItemP;
+  begin
+    with SubMnu^ do begin
+      Item := Items.Current;
+      repeat
+        {Look at next item, in circular fashion}
+        if Item^.Next = nil then
+          Item := Items.First
+        else
+          Item := Item^.Next;
+      until (Item = Items.Current) or Item^.Enabled;
+      Items.Current := Item;
+    end;
+  end;
+  {$ENDIF}
+
+  procedure DrawSubMenu(SubMnu : SubMenuP; UserFunc : Pointer);
+    {-Draw a submenu on-screen}
+  label
+    ExitPoint;
+  var
+    Wid : Integer;
+    Hgt : Integer;
+    Item : ItemP;
+    SaveFrame : FrameArray;
+    SaveMouseOn : Boolean;
+    S : string;
+    SLen : Byte absolute S;
+  begin
+    with SubMnu^, Draw do begin
+      {Don't allow window to exceed screen dimensions}
+      Clip(SubMnu, XH, YH);
+      XH1 := XH;
+      YH1 := YH;
+
+      {$IFDEF UseMouse}
+      SaveMouseOn := MouseCursorOn;
+      if SaveMouseOn then
+        HideMouse;
+      {$ENDIF}
+
+      {Save and clear screen area for help row}
+      if YHelp <> 0 then begin
+        if not SaveWindow(1, YHelp, ScreenWidth, YHelp, True, Pointer(HelpCovers)) then begin
+          PrevMenuStatus := MenuNoMem;
+          goto ExitPoint;
+        end;
+        ClearWindow(1, YHelp, ScreenWidth, YHelp, MapColor(Colors[HelpColor]));
+      end;
+
+      {Save and clear screen area for menu}
+      if not SaveWindow(XL, YL, XH, YH, True, Pointer(Covers)) then begin
+        PrevMenuStatus := MenuNoMem;
+        goto ExitPoint;
+      end;
+      SaveFrame := FrameChars;
+      if Exploding and (ExploDelay <> 0) then begin
+        FrameChars := Frame;
+        ExplodeFrame(@Draw);
+      end;
+      ClearWindow(XL, YL, XH, YH, MapColor(Colors[BodyColor]));
+      if not LotusStyle then
+        {Draw frame around window}
+        DrawFrame(XL, YL, XH, YH, MapColor(Colors[FrameColor]), Frame);
+      FrameChars := SaveFrame;
+
+      {Draw menu title}
+      Wid := XH-XL+1;
+      Hgt := YH-YL+1;
+      if not LotusStyle then
+        {Draw header for window}
+        if Header <> nil then begin
+          S := StringFromHeap(Header);
+          if SLen > Wid then
+            {Truncate title}
+            SLen := Wid;
+          FastWrite(S, YL, XL+((Wid-SLen) shr 1), MapColor(Colors[HeaderColor]));
+        end;
+
+      {Save region under shadow and draw it}
+      if Shadowed then begin
+        ShadowSize := 2*(Wid+2*Hgt);
+        if not GetMemCheck(Shadows, ShadowSize) then begin
+          PrevMenuStatus := MenuNoMem;
+          goto ExitPoint;
+        end;
+        SaveShadowFrame(@Draw);
+        DrawShadowFrame(@Draw);
+      end;
+
+      {$IFDEF Tpro5Menu}
+      {Make sure Current points to an enabled item, if any}
+      if (Items.Current <> nil) and not Items.Current^.Enabled then
+        SetCurrentToNextEnabledItem(SubMnu);
+      {$ENDIF}
+
+      {Draw the items on the menu}
+      Item := Items.First;
+      while Item <> nil do begin
+        DrawItem(SubMnu, Item, UserFunc);
+        Item := Item^.Next;
+      end;
+    end;
+
+ExitPoint:
+    {$IFDEF UseMouse}
+    if SaveMouseOn then
+      ShowMouse;
+    {$ENDIF}
+  end;
+
+  procedure EraseSubMenu(SubMnu : SubMenuP);
+    {-Erase a submenu from the screen}
+  var
+    SaveFrame : FrameArray;
+    SaveMouseOn : Boolean;
+  begin
+    {$IFDEF UseMouse}
+    SaveMouseOn := MouseCursorOn;
+    if SaveMouseOn then
+      HideMouse;
+    {$ENDIF}
+
+    with SubMnu^, Draw do begin
+      if Shadowed then
+        if Shadows <> nil then begin
+          RestoreShadowFrame(@Draw);
+          FreeMemCheck(Shadows, ShadowSize);
+        end;
+      if Covers <> nil then begin
+        if Exploding and (ExploDelay <> 0) then begin
+          SaveFrame := FrameChars;
+          FrameChars := Frame;
+          ImplodeFrame(@Draw);
+          FrameChars := SaveFrame;
+        end;
+        RestoreWindow(XL, YL, XH, YH, True, Pointer(Covers));
+      end;
+      if HelpCovers <> nil then
+        RestoreWindow(1, YHelp, ScreenWidth, YHelp, True, Pointer(HelpCovers));
+    end;
+    {$IFDEF UseMouse}
+    if SaveMouseOn then
+      ShowMouse;
+    {$ENDIF}
+  end;
+
+  function TopOrientation(Stack : MenuStackP) : Orientation;
+    {-Return the orientation at the top of the stack}
+  begin
+    if Stack = nil then
+      TopOrientation := NoOrient
+    else
+      TopOrientation := Stack^.Top^.Orient;
+  end;
+
+  procedure CallMenuItemProc(Key : MenuKey);
+    {-Call user-defined routine whenever another item is selected}
+  inline($FF/$1E/MenuItemProc); {CALL DWORD PTR [MenuItemProc]}
+
+  procedure MarkCurrItem(CurI : ItemP);
+    {-Call user-defined routine whenever current item is displayed}
+  begin
+    if MenuItemProc <> nil then
+      if CurI <> nil then
+        CallMenuItemProc(CurI^.Key);
+  end;
+
+  procedure UpdateItems(SubMnu : SubMenuP; OldI, NewI : ItemP);
+    {-Update the display of the OldI and NewI items}
+  begin
+    SubMnu^.Items.Current := NewI;
+    if OldI <> NewI then
+      DrawItem(SubMnu, OldI, CurrentUserFunc);
+    DrawItem(SubMnu, NewI, CurrentUserFunc);
+    MarkCurrItem(NewI);
+  end;
+
+  procedure DecItem(SubMnu : SubMenuP);
+    {-Move to the previous item and update the display}
+  var
+    Old : ItemP;
+    New : ItemP;
+  begin
+    with SubMnu^.Items do begin
+      if Current = nil then
+        Exit;
+      Old := Current;
+      {$IFDEF Tpro5Menu}
+      New := Current;
+      repeat
+        if New = First then
+          New := Last
+        else
+          New := New^.Prev
+      until New^.Enabled or (New = Current);
+      {$ELSE}
+      if Old = First then
+        New := Last
+      else
+        New := Current^.Prev;
+     {$ENDIF}
+    end;
+    {Redraw the old and new items}
+    UpdateItems(SubMnu, Old, New);
+  end;
+
+  procedure IncItem(SubMnu : SubMenuP);
+    {-Move to the previous item and update the display}
+  var
+    Old : ItemP;
+    New : ItemP;
+  begin
+    with SubMnu^.Items do begin
+      if Current = nil then
+        Exit;
+      Old := Current;
+      {$IFDEF Tpro5Menu}
+      New := Current;
+      repeat
+        if New = Last then
+          New := First
+        else
+          New := New^.Next
+      until New^.Enabled or (New = Current);
+      {$ELSE}
+      if Old = Last then
+        New := First
+      else
+        New := Current^.Next;
+      {$ENDIF}
+    end;
+    {Redraw the old and new items}
+    UpdateItems(SubMnu, Old, New);
+  end;
+
+  {!!.09}
+  {$IFDEF UseMouse}
+  function MouseMatch(MX, MY : Byte; SubMnu : SubMenuP;
+                      var Item : ItemP) : Boolean;
+    {-Return true if mouse cursor is within an item of specified menu}
+  var
+    Row : Word;
+    Col : Word;
+    HiPos : Word;
+    S : string;
+  begin
+    with SubMnu^ do begin
+      Item := Items.First;
+      while Item <> nil do begin
+        with Item^ do
+          {$IFDEF Tpro5Menu}
+          {if Enabled then} {!!.10}
+            {Don't look at disabled items}
+            {$ENDIF}
+            begin
+              {Prepare name string and positioning}
+              GetRawItem(SubMnu, Item, S, Row, Col, HiPos);
+              if MY = Row then
+                if (MX >= Col) and (MX < Col+Length(S)) then begin
+                  MouseMatch := True;
+                  Exit;
+                end;
+            end;
+        Item := Item^.Next;
+      end;
+    end;
+    MouseMatch := False;
+  end;
+  {$ENDIF}
+
+  function MapRawCmd(Mnu : Menu; var RawCmd : MKType; var SelectKey : Char) : CommandType;
+    {-Map a raw key command to a context-sensitive menu command}
+  var
+    Ori : Orientation;
+    SameItem : Boolean;                                                 {!!.08}
+    NewSub : SubMenuP;
+    MX : Byte;
+    MY : Byte;
+    Item : ItemP;
+  begin
+    with Mnu^ do begin
+
+      {Default result}
+      MapRawCmd := Mnul;
+
+      {Get some traits of the current submenu}
+      with Active^ do begin
+        Ori := Orient;
+        if Items.Current <> nil then       {!!.20}
+          NewSub := Items.Current^.Sub;
+      end;
+
+      case RawCmd of
+        MKSUp :
+          if Ori = Vertical then
+            MapRawCmd := Mup
+          else if NewSub <> nil then
+            MapRawCmd := Mselect
+          else if TopOrientation(Stack^.Next) = Vertical then
+            MapRawCmd := MsubUp;
+
+        MKSDown :
+          if Ori = Vertical then
+            MapRawCmd := Mdown
+          else if NewSub <> nil then
+            MapRawCmd := Mselect
+          else if TopOrientation(Stack^.Next) = Vertical then
+            MapRawCmd := MsubDown;
+
+        MKSLeft :
+          if Ori = Horizontal then
+            MapRawCmd := Mleft
+          else if TopOrientation(Stack^.Next) = Horizontal then
+            MapRawCmd := MsubLeft
+          else if NewSub <> nil then
+            MapRawCmd := Mselect;
+
+        MKSRight :
+          if Ori = Horizontal then
+            MapRawCmd := Mright
+          else if TopOrientation(Stack^.Next) = Horizontal then
+            MapRawCmd := MsubRight
+          else if NewSub <> nil then
+            MapRawCmd := Mselect;
+
+        MKSExit :
+          MapRawCmd := Mdeselect;
+
+        MKSSelect :
+          MapRawCmd := Mselect;
+
+        MKSHelp :
+          MapRawCmd := Mhelp;
+
+        MKSHome :
+          MapRawCmd := Mhome;
+
+        MKSEnd :
+          MapRawCmd := Mend;
+
+        MKSNone :
+          {Invalid keystroke, ignore}
+          MapRawCmd := Mnul;
+
+        MKSAlpha :
+          {Shouldn't get here, filtered out previously by MenuChoice}
+          MapRawCmd := Mnul;
+
+        {$IFDEF UseMouse}
+        MKSProbe :
+          begin
+            MapRawCmd := Mnul;
+            {Get absolute mouse coordinates}
+            MX := MouseKeyWordX+MouseXLo;
+            MY := MouseKeyWordY+MouseYLo;
+            with Mnu^ do
+              if (Active <> nil) and                             {!!.20}{!!.21}
+                 (MouseMatch(MX, MY, Active, Item)) then begin
+                {Mouse cursor is within item of active submenu}
+                {$IFDEF Tpro5Menu}                                      {!!.10}
+                if not Item^.Enabled then                               {!!.10}
+                  Exit;                                                 {!!.10}
+                {$ENDIF}                                                {!!.10}
+                SameItem := (Item = Active^.Items.Current);             {!!.08}
+                if not SameItem then                                    {!!.08}
+                  UpdateItems(Active, Active^.Items.Current, Item);     {!!.08}
+                if SameItem or SelectOnFirstMouseClick then begin       {!!.08}
+                  MapRawCmd := Mselect;
+                  {Modify the raw command to look like <Enter> was pressed}
+                  RawCmd := MKSSelect;
+                  SelectKey := ^M;
+                end;                                                    {!!.08}
+
+              end else if Stack^.Next <> nil then begin
+                NewSub := Stack^.Next^.Top;
+                if (NewSub <> nil) and                           {!!.20}{!!.21}
+                  (MouseMatch(MX, MY, NewSub, Item)) then begin         {!!.10}
+                  {Mouse cursor is within a parent of active menu}
+                  {$IFDEF Tpro5Menu}                                    {!!.10}
+                  if not Item^.Enabled then                             {!!.10}
+                    Exit;                                               {!!.10}
+                  {$ENDIF}                                              {!!.10}
+                  if Item^.Sub <> Active then begin
+                    {Item has a different submenu, if any, than the one we're on}
+                    {Erase the active menu}
+                    EraseSubMenu(Active);
+                    PopSubMenu(Mnu);
+                    {Redraw the old and new items}
+                    UpdateItems(NewSub, NewSub^.Items.Current, Item);
+                    {Select its submenu, if any}
+                    if SelectOnFirstMouseClick then                     {!!.08}
+                      if NewSub^.Items.Current^.Sub <> nil then
+                        MapRawCmd := MSelect;
+
+                    {Disable automatic popdown}
+                    SubPending := False;
+                  end;
+                end;                                                    {!!.10}
+              end;
+          end;
+        {$ENDIF}
+
+      else
+        {A user-defined exit key}
+        MapRawCmd := Mexit;
+      end;
+    end;
+  end;
+
+  function MapAlphaCmd(Mnu : Menu; Key : Char) : CommandType;
+    {-Map an alpha character by selecting the appropriate item, if any}
+  var
+    Item : ItemP;
+    Ch : Char;
+    S : string;
+  begin
+    {Ignore control and high-bit characters}
+    if (Key > #31) and (Key < #128) then
+      with Mnu^ do begin
+        Ch := Upcase(Key);
+        Item := Active^.Items.First;
+
+        {Scan the list of items for a match}
+        while Item <> nil do begin
+          with Item^ do
+            {$IFDEF Tpro5Menu}
+            if Enabled then
+              {Don't look at disabled items}
+              {$ENDIF}
+              if SelectPos <> 0 then begin
+                S := StringFromHeap(Name);
+                if Upcase(S[SelectPos]) = Ch then begin
+                  {Update the screen}
+                  UpdateItems(Active, Active^.Items.Current, Item);
+                  MapAlphaCmd := Mselect;
+                  Exit;
+                end;
+              end;
+          Item := Item^.Next;
+        end;
+      end;
+    {No match if we get here}
+    MapAlphaCmd := Mnul;
+  end;
+
+  function FirstActive(SubMnu : SubMenuP) : ItemP;
+    {-Return pointer to first non-disabled item on submenu}
+  var
+    I : ItemP;
+  begin
+    with SubMnu^.Items do begin
+      {$IFDEF Tpro5Menu}
+      I := First;
+      while (I <> Current) and not I^.Enabled do
+        I := I^.Next;
+      FirstActive := I;
+      {$ELSE}
+      FirstActive := First;
+      {$ENDIF}
+    end;
+  end;
+
+  {!!.09}
+  function LastActive(SubMnu : SubMenuP) : ItemP;
+    {-Return pointer to last non-disabled item on submenu}
+  var
+    I : ItemP;
+  begin
+    with SubMnu^.Items do begin
+      {$IFDEF Tpro5Menu}
+      I := Last;
+      while (I <> Current) and not I^.Enabled do
+        I := I^.Prev;
+      LastActive := I;
+      {$ELSE}
+      LastActive := Last;
+      {$ENDIF}
+    end;
+  end;
+
+  function ShowSubMenu(Mnu : Menu) : Boolean;
+    {-Select the current submenu}
+  var
+    NewSub : SubMenuP;
+  begin
+    with Mnu^ do begin
+      NewSub := Active^.Items.Current^.Sub;
+      if NewSub <> nil then begin
+        PushSubMenu(Mnu, NewSub);
+        DrawSubMenu(NewSub, CurrentUserFunc);
+        MarkCurrItem(NewSub^.Items.Current);
+        ShowSubMenu := True;
+      end else
+        ShowSubMenu := False;
+    end;
+  end;
+
+  procedure CheckSubPending(Mnu : Menu);
+    {-Check for a pending submenu and pop it down if available}
+  begin
+    with Mnu^ do
+      if SubPending then
+        {Automatically select submenu if available}
+        if ShowSubMenu(Mnu) then
+          SubPending := False;
+  end;
+
+  function EvaluateCommand(Mnu : Menu; Mcmd : CommandType;
+                           var Key : MenuKey) : Boolean;
+    {-Evaluate a built-in menu command}
+  var
+    Done : Boolean;
+  begin
+    Done := False;
+
+    with Mnu^ do begin
+
+      {Store a global pointer to current user function}
+      CurrentUserFunc := UserFunc;
+
+      case Mcmd of
+
+        Mup, Mleft :
+          begin
+            DecItem(Active);
+            CheckSubPending(Mnu);
+          end;
+
+        Mdown, Mright :
+          begin
+            IncItem(Active);
+            CheckSubPending(Mnu);
+          end;
+
+        MsubUp, MsubLeft, MsubDown, MsubRight :
+          begin
+            {Erase the active menu}
+            EraseSubMenu(Active);
+            PopSubMenu(Mnu);
+
+            {Increment or decrement as requested}
+            case Mcmd of
+              MsubUp, MsubLeft : DecItem(Active);
+              MsubDown, MsubRight : IncItem(Active);
+            end;
+
+            {Select its submenu, if any}
+            if not ShowSubMenu(Mnu) then
+              if AllowPendingSubMenus then
+                {A submenu will pop down next time it's available}
+                SubPending := True;
+          end;
+
+        Mhome :
+          with Active^.Items do
+            if Current <> nil then begin
+              {!!.09}
+              UpdateItems(Active, Current, FirstActive(Active));
+              CheckSubPending(Mnu);
+            end;
+
+        Mend :
+          with Active^.Items do
+            if Current <> nil then begin
+              {!!.09}
+              UpdateItems(Active, Current, LastActive(Active));
+              CheckSubPending(Mnu);
+            end;
+
+        Mexit :
+          begin
+            Done := True;
+            if Active^.Items.Current = nil then  {!!.20}
+              Key := 00                          {!!.20}
+            else                                 {!!.20}
+              Key := Active^.Items.Current^.Key;
+          end;
+
+        Mselect :
+          if Active^.Items.Current <> nil then
+            {Select submenu, if any}
+            if not ShowSubMenu(Mnu) then begin
+              {No submenus, quit and return menu key}
+              Done := True;
+              Key := Active^.Items.Current^.Key;
+            end;
+
+        Mdeselect :
+          begin
+            if Active = Root then begin
+              {Deselecting the top level menu}
+              Done := True;
+              if Active^.Items.Current = nil then
+                Key := 00
+              else
+                Key := Active^.Items.Current^.Key;
+            end else begin
+              {Erase the current menu}
+              EraseSubMenu(Active);
+              PopSubMenu(Mnu);
+              {Redraw the current item to update the cursor}
+              DrawItem(Active, Active^.Items.Current, CurrentUserFunc);
+              MarkCurrItem(Active^.Items.Current);
+            end;
+            SubPending := False;
+          end;
+
+        Mhelp :
+          if MenuHelpPtr <> nil then begin
+            {Get the current item key}
+            if Active^.Items.Current = nil then
+              Key := 00
+            else
+              Key := Active^.Items.Current^.Key;
+            {Call the user help routine}
+            HelpProc(HelpForMenu, Mnu, Word(Key));
+          end;
+
+      end;
+    end;
+
+    EvaluateCommand := Done;
+  end;
+
+  function MenuChoice(Mnu : Menu; var SelectKey : Char) : MenuKey;
+    {-Display menu system, let user browse it, return menukey of selected item,
+      return keystroke used to select item, leave menu on screen}
+  var
+    Done : Boolean;
+    Mcmd : CommandType;
+    Key : MenuKey;
+    KW : Word;
+    Cursor : Word;
+    XY : Word;
+    SaveMouseOn : Boolean;
+    SaveWaitFor : Boolean;
+  begin
+    if PrevMenuStatus <> MenuSuccess then
+      Exit;
+
+    {Get current cursor state}
+    GetCursorState(XY, Cursor);
+    if HideCursor then
+      HiddenCursor;
+
+    {$IFDEF UseMouse}
+    if MenuMouseEnabled then begin
+      SaveMouseOn := MouseCursorOn;
+      SaveWaitFor := WaitForButtonRelease;
+      WaitForButtonRelease := True;
+      ShowMouse;
+    end;
+    {$ENDIF}
+
+    with Mnu^ do begin
+      {Store a global pointer to current user function}
+      CurrentUserFunc := UserFunc;
+
+      {Draw the root menu if none is currently on screen}
+      if Visible then begin
+        {Update the cursor position}
+        DrawItem(Active, Active^.Items.Current, CurrentUserFunc);
+        MarkCurrItem(Active^.Items.Current); {!!.21}
+      end else begin
+        {Assure the active stack is clear}
+        ClearMenuStack(Mnu);
+        {Draw the root menu}
+        PushSubMenu(Mnu, Root);
+        DrawSubMenu(Root, CurrentUserFunc);
+        MarkCurrItem(Root^.Items.Current);
+        Visible := True;
+      end;
+
+      {Loop reading keys}
+      Done := False;
+      repeat
+
+        if PrevMenuStatus <> MenuSuccess then begin
+          {Keep watch for errors}
+          Done := True;
+          SelectKey := #0;
+          Key := 0;
+
+        end else begin
+          {Get the next keystroke and command}
+          MenuCmdNum := GetCommand(MenuKeySet, MenuGetKeyPtr, KW);
+
+          {Store byte style keystroke}
+          if lo(KW) = 0 then
+            SelectKey := Char(hi(KW) or $80)
+          else
+            SelectKey := Char(lo(KW));
+
+          if SelectKey in SelectKeys then begin
+            {User-defined hot keys override any command keys}
+            MenuCmdNum := MKSAlpha;
+            Mcmd := Mexit;
+          end else if MenuCmdNum = MKSAlpha then begin
+            {Perhaps an alpha selection key}
+            Mcmd := MapAlphaCmd(Mnu, SelectKey);
+            {Treat like <Enter> key}
+            SelectKey := ^M;
+            MenuCmdNum := MKSSelect;
+          end else
+            {Defined command key}
+            Mcmd := MapRawCmd(Mnu, MenuCmdNum, SelectKey);
+
+          if Mcmd <> Mnul then
+            {Evaluate the command}
+            Done := EvaluateCommand(Mnu, Mcmd, Key);
+        end;
+      until Done;
+    end;
+
+    {Return the menu key}
+    MenuChoice := Key;
+
+    {$IFDEF UseMouse}
+    if MenuMouseEnabled then begin
+      if not SaveMouseOn then
+        HideMouse;
+      WaitForButtonRelease := SaveWaitFor;
+    end;
+    {$ENDIF}
+
+    {Restore cursor}
+    RestoreCursorState(XY, Cursor);
+  end;
+
+  procedure EraseMenu(Mnu : Menu; ResetSelections : Boolean);
+    {-Erase active menus from the screen, reset selections to base if desired}
+  begin
+    with Mnu^ do begin
+      {Trace and erase the active stack}
+      while Stack <> nil do begin
+        EraseSubMenu(Active);
+        PopSubMenu(Mnu);
+      end;
+      Visible := False;
+    end;
+    {Reset all selections if requested}
+    if ResetSelections then
+      ResetMenu(Mnu);
+  end;
+
+  procedure EraseCurrentSubMenu(Mnu : Menu);
+    {-Erase the currently displayed submenu}
+  begin
+    with Mnu^ do begin
+      {Erase the top element of the active stack}
+      if Stack <> nil then begin
+        EraseSubMenu(Active);
+        PopSubMenu(Mnu);
+      end;
+      if Stack = nil then
+        Visible := False;
+    end;
+  end;
+
+  procedure EraseMenuOntoStack(Mnu : Menu; var TStack : MenuStackP);
+    {-Erase a menu but save its active stack for later redraw}
+  var
+    N : MenuStackP;
+    P : MenuStackP;
+  begin
+    TStack := nil;
+    with Mnu^ do begin
+      {Erase the current menus}
+      while Stack <> nil do begin
+        {Push the current submenu onto another stack}
+        if not GetMemCheck(P, SizeOf(MenuStackRec)) then begin
+          PrevMenuStatus := MenuNoMem;
+          Exit;
+        end;
+        P^.Top := Stack^.Top;
+        P^.Next := TStack;
+        TStack := P;
+
+        {Erase the submenu}
+        EraseSubMenu(Stack^.Top);
+
+        {Deallocate the stack record}
+        N := Stack^.Next;
+        FreeMemCheck(Stack, SizeOf(MenuStackRec));
+        Stack := N;
+      end;
+      Visible := False;
+    end;
+  end;
+
+  procedure DrawMenuFromStack(Mnu : Menu; var TStack : MenuStackP);
+    {-Draw a menu system using stack of items}
+  var
+    N : MenuStackP;
+    P : MenuStackP;
+  begin
+    with Mnu^ do
+      if TStack <> nil then begin
+        {Redraw the menus}
+        while TStack <> nil do begin
+          {Push the current submenu onto another stack}
+          if not GetMemCheck(P, SizeOf(MenuStackRec)) then begin
+            PrevMenuStatus := MenuNoMem;
+            Exit;
+          end;
+          P^.Top := TStack^.Top;
+          P^.Next := Stack;
+          Stack := P;
+
+          {Draw the submenu}
+          DrawSubMenu(TStack^.Top, UserFunc);
+
+          N := TStack^.Next;
+          FreeMemCheck(TStack, SizeOf(MenuStackRec));
+          TStack := N;
+        end;
+        Active := Stack^.Top;
+        MarkCurrItem(Active^.Items.Current);
+        Visible := True;
+      end;
+  end;
+
+  procedure RedrawMenu(Mnu : Menu);
+    {-Redraw the entire active menu system, including all active submenus}
+  var
+    TempStack : MenuStackP;
+    Cursor : Word;                        {!!.09}
+    XY : Word;                            {!!.09}
+  begin
+    GetCursorState(XY, Cursor);           {!!.09}
+    EraseMenuOntoStack(Mnu, TempStack);
+    DrawMenuFromStack(Mnu, TempStack);
+    RestoreCursorState(XY, Cursor);       {!!.09}
+  end;
+
+  function FindSubItem(SubMnu : SubMenuP; MKey : MenuKey;
+                       var Item : ItemP) : Boolean;
+    {-Recursively search for MKey, starting with menu SubMnu}
+  var
+    TempItem : ItemP;
+  begin
+    with SubMnu^ do begin
+      FindSubItem := True;
+      TempItem := Items.First;
+      while TempItem <> nil do begin
+        if TempItem^.Key = MKey then begin
+          Item := TempItem;
+          Exit;
+        end else if TempItem^.Sub <> nil then
+          if FindSubItem(TempItem^.Sub, MKey, Item) then
+            Exit;
+        TempItem := TempItem^.Next;
+      end;
+      FindSubItem := False;
+    end;
+  end;
+
+  function FindMenuItem(Mnu : Menu; MKey : MenuKey;
+                        var Item : ItemP) : Boolean;
+    {-Search for item key MKey, returning True and pointer to item if found}
+  begin
+    FindMenuItem := FindSubItem(Mnu^.Root, MKey, Item);
+  end;
+
+  function GetMenuItemName(Mnu : Menu; MKey : MenuKey;
+                           var Name : string) : Boolean;
+    {-Return the string describing the specified menu item.  The function
+      value is True if the item exists and False if it does not}
+  var
+    Item : ItemP;
+  begin
+    if FindMenuItem(Mnu, MKey, Item) then begin
+      Name := StringFromHeap(Item^.Name);
+      GetMenuItemName := True;
+    end else begin
+      Name := '';
+      GetMenuItemName := False;
+    end;
+  end;
+
+  function SetMenuItemName(Mnu : Menu; MKey : MenuKey; NewName : string) : Boolean;
+    {-Change the string describing the specified menu item to the new string.
+      The new string is forced to be the same length as the old, either by
+      truncation or by padding with blanks}
+  var
+    Item : ItemP;
+    NameLen : Byte;
+  begin
+    SetMenuItemName := False;
+    if FindMenuItem(Mnu, MKey, Item) then
+      if Item^.Name <> nil then begin
+        NameLen := Length(StringFromHeap(Item^.Name));
+        if Length(NewName) >= NameLen then
+          NewName[0] := Char(NameLen)
+        else
+          NewName := Pad(NewName, NameLen);
+        string(Item^.Name^) := NewName;
+        SetMenuItemName := True;
+      end;
+  end;
+
+  function GetCurrentMenuKey(Mnu : Menu) : MenuKey;
+    {-Return the key of the currently selected item}
+  begin
+    with Mnu^ do
+      if not Visible or (Active = nil) then
+        GetCurrentMenuKey := MaxLongInt
+      else
+        GetCurrentMenuKey := Active^.Items.Current^.Key;
+  end;
+
+  {$IFDEF Tpro5Menu}
+  procedure EnableMenuItem(Mnu : Menu; MKey : MenuKey);
+    {-Allow the user to select the specified menu item}
+  var
+    ItemPtr : ItemP;
+  begin
+    if FindMenuItem(Mnu, MKey, ItemPtr) then
+      ItemPtr^.Enabled := True;
+  end;
+
+  procedure DisableMenuItem(Mnu : Menu; MKey : MenuKey);
+    {-Prevent user from selecting the specified menu item.}
+  var
+    ItemPtr : ItemP;
+  begin
+    if FindMenuItem(Mnu, MKey, ItemPtr) then
+      ItemPtr^.Enabled := False;
+  end;
+  {$ENDIF}
+
+  procedure SelectSubMenu(SubMnu : SubMenuP);
+    {-Select path of submenus to make ItemToFind the current item}
+  var
+    Item : ItemP;
+    P : MenuStackP;
+  begin
+    with SubMnu^ do begin
+      Item := Items.First;
+      while not ItemFound and (Item <> nil) do begin
+        if Item^.Key = ItemToFind then
+          ItemFound := True
+        else if Item^.Sub <> nil then
+          SelectSubMenu(Item^.Sub);
+        if not ItemFound then
+          Item := Item^.Next;
+      end;
+      if ItemFound then begin
+        {Set the current item for this submenu}
+        Items.Current := Item;
+        {Stack the submenus}
+        if not GetMemCheck(P, SizeOf(MenuStackRec)) then begin
+          PrevMenuStatus := MenuNoMem;
+          Exit;
+        end;
+        P^.Top := SubMnu;
+        P^.Next := MStack;
+        MStack := P;
+      end;
+    end;
+  end;
+
+  procedure SelectMenuItem(Mnu : Menu; MKey : MenuKey);
+    {-Update the visible menu system to select item MKey, if possible}
+  var
+    P : MenuStackP;
+    Item : ItemP;
+    MTemp : MenuStackP;
+    MFree : MenuStackP;
+    MPrev : MenuStackP;
+  begin
+    {First assure item exists and is enabled}
+    if not FindMenuItem(Mnu, MKey, Item) then
+      Exit;
+    {$IFDEF Tpro5Menu}
+    if not Item^.Enabled then
+      Exit;
+    {$ENDIF}
+
+    {Now mark item as current}
+    ItemFound := False;
+    ItemToFind := MKey;
+    MStack := nil;
+
+    with Mnu^ do begin
+      {Store a global pointer to current user function}
+      CurrentUserFunc := UserFunc;                      {!!.09}
+
+      if Visible then begin
+        with Active^ do begin
+          {See if desired item is on current submenu}
+          Item := Items.First;
+          repeat
+            if Item^.Key = ItemToFind then begin
+              UpdateItems(Active, Items.Current, Item);
+              Exit;
+            end;
+            Item := Item^.Next;
+          until Item = nil;
+        end;
+        {It's not selected, erase the menu system to draw it cleanly}
+        EraseMenu(Mnu, False);
+      end;
+
+      {Search the menu tree for the item}
+      SelectSubMenu(Root);
+
+      if ItemFound then begin
+
+        {$IFDEF Tpro5Menu}
+        {Assure all current items in the stack are enabled}
+        MPrev := nil;
+        MTemp := MStack;
+
+        while MTemp <> nil do
+          with MTemp^.Top^ do begin
+            Item := Items.Current;
+            if not Item^.Enabled then begin
+              {Current item is not enabled}
+
+              {Look for closest previous enabled item}
+              repeat
+                if Item = Items.First then
+                  Item := Items.Last
+                else
+                  Item := Item^.Prev;
+              until (Item = Items.Current) or Item^.Enabled;
+
+              if not Item^.Enabled then
+                {No items were enabled, discard starting at this submenu}
+                MFree := MTemp
+              else begin
+                {Discard starting at next submenu}
+                MFree := MTemp^.Next;
+                {Change current item}
+                Items.Current := Item;
+              end;
+
+              {The stack starting at MFree will not be used}
+              while MFree <> nil do begin
+                P := MFree^.Next;
+                FreeMemCheck(MFree, SizeOf(MenuStackRec));
+                MFree := P;
+              end;
+
+              if MPrev = nil then
+                {No menus left, exit whole routine}
+                Exit
+              else begin
+                {Terminate stack}
+                if Item^.Enabled then
+                  MTemp^.Next := nil
+                else if MPrev = nil then
+                  MStack := nil
+                else
+                  MPrev^.Next := nil;
+                {Exit loop}
+                MTemp := nil;
+              end;
+
+            end else begin
+              MPrev := MTemp;
+              MTemp := MTemp^.Next;
+            end;
+          end;
+        {$ENDIF}
+
+        {Draw the menu system from the stack built by SelectSubMenu}
+        while MStack <> nil do begin
+          PushSubMenu(Mnu, MStack^.Top);
+          DrawSubMenu(MStack^.Top, UserFunc);
+          P := MStack^.Next;
+          FreeMemCheck(MStack, SizeOf(MenuStackRec));
+          MStack := P;
+        end;
+        MarkCurrItem(Active^.Items.Current);
+        Visible := True;
+      end;
+    end;
+  end;
+
+  function AddMenuCommand(Cmd : MKType; NumKeys : Byte; Key1, Key2 : Word) : Boolean;
+    {-Add a new command key assignment or change an existing one}
+  begin
+    AddMenuCommand := AddCommandPrim(MenuKeySet, MenuKeyMax, Cmd, NumKeys, Key1, Key2);
+  end;
+
+  {$IFDEF UseMouse}
+  procedure EnableMenuMouse;
+    {-Enable mouse control and display mouse cursor}
+  begin
+    if MouseInstalled then begin
+      MenuGetKeyPtr := @TPMouse.ReadKeyOrButton;
+      EnableEventHandling;
+      MenuMouseEnabled := True;
+    end;
+  end;
+
+  procedure DisableMenuMouse;
+    {-Disable mouse control and hide mouse cursor}
+  begin
+    if MenuMouseEnabled then begin
+      MenuGetKeyPtr := @ReadKeyWord;
+      DisableEventHandling;
+      MenuMouseEnabled := False;
+    end;
+  end;
+  {$ENDIF}
+

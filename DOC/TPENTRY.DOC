@@ -1,0 +1,1063 @@
+
+               Supplement to documentation for TPENTRY
+               ---------------------------------------
+
+How TPENTRY Works
+-----------------
+
+Because TPENTRY has become increasingly complex over time, we think it
+might now be appropriate to give you a broad overview of how the whole
+data entry system works. It is our hope that, given a general
+understanding of how control flows from one part of the system to
+another, you will be better able to understand not only how to use the
+system, but also how to take advantage of the numerous hooks it makes
+available to the programmer.
+
+From the broadest view, control flows like this:
+
+    +----- 1 -----+
+    |   program   |
+    +-------------+
+       |      ^
+       v      |
+    +----- 2 -----+
+    |  EditScreen |
+    +-------------+
+       |      ^
+       v      |
+    +----- 3 -----+
+    |    field    |
+    |   editors   |
+    +-------------+
+
+That is, the main program calls EditScreen to handle the editing of
+all the fields in the entry screen. It in turn calls upon one of the
+"field editors" (see p. 3-11) to process the individual fields. When
+the field editor returns control, EditScreen will either move the
+cursor to another field and continue editing, or return control to the
+main program. Depending on the "exit command" (see p. 3-5) issued by
+the user, the program may either terminate the editing session or make
+another call to EditScreen. (For an example of how to process the
+various exit commands, see ENTRY.PAS.)
+
+Sharpening our focus a bit, we can see that the flow of control within
+EditScreen itself looks something like this:
+
+    +----------- 1 -----------+
+    |  redraw entire screen   |
+    +-------------------------+
+        +----------- 2 -----------+
+        |     position cursor     | <----------+
+        +-------------------------+            |
+        +----------- 3 -----------+            |
+        |    convert to string    |            |
+        +-------------------------+            |
+            +----------- 4 -----------+        |
+            |  call pre-edit routine  |<---+   |
+            +-------------------------+    |   |
+            +----------- 5 -----------+    |   |
+            |    call field editor    |    |   |
+            +-------------------------+    |   |
+            +----------- 6 -----------+    |   |
+            |   convert from string   |    |   |
+            +-------------------------+    |   |
+            +----------- 7 -----------+    |   |
+            | call post-edit routine  |    |   |
+            +-------------------------+    |   |
+            +----------- 8 -----------+    |   |
+            |     process command     |    |   |
+            +-------------------------+    |   |
+                |        |       |         |   |
+               exit     new     same       |   |
+             command   field    field      |   |
+                |        |       +---------+   |
+                v        +---------------------+
+
+On entry to EditScreen, the entire screen is drawn (box 1). (We'll
+skip the details of how that's done because you don't really need to
+know.) After that, control flows into the larger of the routine's two
+main loops.
+
+At the beginning of this loop (comprising boxes 2-8), the cursor is
+moved into the current field, then the "conversion routine" for that
+field is called (see p. 3-22). Its job in this situation is to convert
+the variable associated with the current field from its native type
+(integer, longint, real, date, etc.) into a string, then merge that
+string with the field's "picture mask" (see p. 3-6). This will allow
+the field editor to perform its duties without any real knowledge of
+the field's type.
+
+Digressing for a moment: For each data type supported by TPENTRY there
+are three corresponding routines: one to add a field of that type to
+the entry screen, one to perform conversions, and one to perform
+validation. This "modular" approach offers two distinct advantages:
+Turbo Pascal's smart linker can strip out all the code that handles an
+unused data type, and the programmer can expand TPENTRY to handle new
+data types simply by writing the necessary conversion and validation
+routines. (See p. 3-22, "User-defined Types".) Now back to our flow
+charts...
+
+Control then flows into the innermost loop (boxes 4-8). The first task
+here is to call the "pre-edit routine" if there is one (see p. 3-19).
+This gives the calling program a chance to display a help message if
+desired. The next step is to call one of the three field editors: the
+"string editor," the "numeric editor," or the "multiple-choice editor"
+(again, see p. 3-11). We'll discuss the job of the field editors in
+more detail below. When the field editor returns control to
+EditScreen, the conversion routine is called again, this time to
+convert the string being edited back to its native type. This process
+requires two steps: one to strip out the picture mask characters, and
+a second to convert the raw string into the appropriate type. (For
+examples of conversion routines, see TPENTRY.IN1.)
+
+The next step is to call the "post-edit routine" if there is one (see
+p. 3-16). This is unquestionably the most important hook provided to
+the programmer by TPENTRY, and understanding it is the key to
+mastering the power of the system. You can do many things in a
+post-edit routine: update a calculated field; protect or unprotect a
+field; hide or unhide a field; change the command entered by the user;
+force the cursor to move to a particular field; the list goes on. The
+more common possibilities are discussed either in the manual or here
+in TPENTRY.DOC, and most of them are demonstrated in ENTRY.PAS. But
+the possibilities are almost unlimited, as some of our existing
+customers have proven.
+
+After the post-edit routine has been called, EditScreen is ready to
+evaluate the command that caused the field editor to return control.
+This command will usually fall into one of two categories: an "exit
+command" (such as <Esc> or <CtrlEnter>) or a cursor movement command
+(such as <Enter>, <Up>, or <Down>). If it is an exit command,
+EditScreen will return control to the calling program, passing back
+the code for the exit command as its function result. If it is a
+cursor movement command, EditScreen has to calculate the field to move
+to. In some cases, the cursor may not need to be moved at all--for
+example, if the current "wrap mode" (see p. 3-73) is StopAtEdges, and
+the user has tried to move the cursor beyond the last row by pressing
+<Down>--and control flows back to the top of the inner loop (box 4).
+In most cases, however, the cursor will be moved to another field, and
+control will flow back to the top of the outer loop (box 2).
+
+Digressing again for a moment: The category "exit commands" itself
+comprises two types of commands, pre-defined commands and user-defined
+commands. Creating a user-defined exit command is a simple two-step
+process: first you call AddEntryCommand to assign your command to a
+key (see Appendix C, under "Installable Keyboard Hooks"), then you
+write the code to process the command. For some good examples of how
+to use this hook, see ENTRY.PAS.
+
+That pretty much covers the work done by EditScreen, so let's sharpen
+our focus a bit further and look at what the field editors do:
+
+    +----------- 1 -----------+
+    |       draw string       | <---+ <--------+
+    +-------------------------+     |          |
+    +----------- 2 -----------+     |          |
+    |    get next command     |     |          |
+    +-------------------------+     |          |
+    +----------- 3 -----------+     |          |
+    |     process command     |     |          |
+    +-------------------------+     |          |
+          |             |           |          |
+        exit         editing        |          |
+       command       command        |          |
+          |             +-----------+          |
+          v                                    |
+    +----------- 4 -----------+    +---- 6 ----------------+
+    | call validation routine |    | call pre-edit routine |
+    +-------------------------+    +-----------------------+
+          |             |                      |
+        input         input        +---- 5 ----------------+
+       accepted      rejected ---> |  call error handler   |
+          |                        +-----------------------+
+          v
+
+Each of the three field editors has a large main loop. At the top of
+the loop, the string being edited is drawn and the cursor is moved
+into position (box 1). The next step is to get a command from the
+user. Here again, the programmer has an opportunity to gain temporary
+control. By changing the value of the global variable EntryKeyPtr, you
+can set up a customized keyboard input routine (which we'll call
+"GetKey"). The GetKey routine's main job is to return the next
+keystroke entered by the user, but it can do any number of things
+while it is waiting for that event if it does them quickly enough.
+This facility is known as the "Background Task Hook," and it is
+discussed at length in Appendix C (starting on p. 14-10).
+
+Once the keyboard handler has returned the next key and it has been
+translated into a command (again, see the section on "Installable
+Keyboard Hooks" in Appendix C), the field editor must process that
+command. Here again there are two broad categories of commands: exit
+commands and editing commands. Editing commands are commands that
+modify the contents of the field and/or move the cursor from one part
+of it to another. The category of exit commands comprises both the
+"true" exit commands (those that are treated as exit commands by
+EditScreen) and those commands that cause the cursor to be moved from
+one field to another.
+
+When an exit command is given, the field editor will do one of two
+things. If <Esc> was pressed (corresponding to the ESquit command), it
+will restore the original value of the string being edited and exit
+immediately. Otherwise, it will call the "validation routine"
+associated with the current field. (For examples of validation
+routines, see TPENTRY.IN1 and ENTRY.PAS.) The task of the validation
+routine varies depending on the data type, but in general it must do
+two things: convert the string being edited back to its native type,
+then determine whether or not the value entered is acceptable. If the
+value is acceptable, it will return True, telling the field editor to
+return control to EditScreen. If it is unacceptable, it will return
+False, passing back an error code (see p. 3-27) and a pointer to an
+error message. The field editor will then either call the user-defined
+error routine if there is one (see p. 3-20) or "ring the bell" if
+there isn't. (In most applications you will probably want to take
+advantage of this hook, because the user will rarely understand what
+he did wrong if you don't display the error message.) The field editor
+will then call the pre-edit routine (if there is one) again, in case
+the help message was overwritten by the error message, and go back to
+the start of the loop (box 1). This process will be repeated until a
+valid entry is made by the user or <Esc> is pressed.
+
+That pretty much covers the major components of the data entry system
+provided in TPENTRY. It is a complex system, to be sure, but we hope
+that this overview will give you the confidence to explore it further.
+After you've worked with it a while, we think you'll agree that the
+system's uncommon flexibility is responsible for its complexity, and
+that ultimately the end justifies the means.
+
+Scrollable Entry Screens
+------------------------
+
+As of version 5.04, TPENTRY provides improved support for scrollable
+data entry screens. Some of these enhancements can be easily
+quantified:
+
+  Limit               5.04 or higher  5.00-5.03
+  -----------------   --------------  ---------
+  Max fields/screen   2000            255
+  Max rows            255             127
+  Max columns         255             80
+  Scrolling           Horizontal/     Vertical
+                      Vertical        only
+
+In making these enhancements, we have also managed to increase the
+performance of TPENTRY considerably, principally through the use of
+virtual screens (allowing for faster, smoother scrolling).
+
+The price to be paid for these improvements is, of course, increased
+memory usage. With all features of TPENTRY enabled, the same program
+compiled with 5.04 will be roughly 3K larger than it would have been
+if compiled with an earlier version. In addition, a program will use
+more heap space than it would have previously, because the virtual
+screen that is used to hold the image of the entry screen is allocated
+on the heap. (The amount of memory required for the virtual screen
+depends on the number of rows and columns in the entry screen.) Since
+most applications don't require scrollable entry screens, we have
+therefore used conditional compilation directives to prevent the code
+that handles scrolling from being pulled in when it isn't needed.
+
+So, if you wish to create scrollable entry screens, you must (1) load
+TPDEFINE.INC into your editor, (2) delete the '.' in
+
+ {.$DEFINE TpEntryScrolls}
+
+at the end of the file, (3) save the file, and (4) recompile
+TPENTRY.PAS. You can then create scrollable entry screens simply by
+specifying row and/or column coordinates that are outside the bounds
+of the entry screen's window. (By default, the entire screen is the
+entry window; to limit it, use SetEntryWindow.) TPENTRY will handle
+everything else automatically.
+
+When TpEntryScrolls is unDEFINEd, as it is by default, programs that
+use TPENTRY will actually be smaller now than they would have been in
+the past, even though TPENTRY now pulls in TPWINDOW (whether it uses
+it or not). You will not, however, be able to create scrollable entry
+screens, even of the older, slower variety. If you try, your program
+will abort as soon as you try to add a field that cannot be displayed
+within the entry window.
+
+To give you an idea of what a large scrollable entry screen looks
+like, we have included a new demo program, BEST.PAS (Big Entry Screen
+Test). It doesn't do anything useful; it just shows you a little bit
+of what TPENTRY can now do. The only special features worth noting are
+
+  - <AltS> lets you toggle between line- and page-based scrolling (see
+    the discussion of ScrollByPage, below).
+  - The entry in the first field determines how many rows below it are
+    visible. (This is to demonstrate a technique described below in
+    the section on Hidden and Semi-Hidden Fields.)
+
+Before trying to compile BEST.PAS, be sure to DEFINE TpEntryScrolls.
+
+More enhancements:
+
+  {$IFDEF TpEntryScrolls}
+  const
+    ScrollByPage : Boolean = False;
+  {$ENDIF}
+
+  This typed constant allows you to select an alternate mode of
+  scrolling. If ScrollByPage is True and the cursor is moved to a
+  field above or below the edges of the entry window, the entry screen
+  is scrolled by one full page (or more) rather than by a single line.
+  So, if the window is 20 rows high, the cursor is on the 20th row,
+  and you press <Down> to get to a field on row 21, rows 21-40 would
+  scroll into view. If ScrollByPage is False, as it is by default,
+  rows 2-21 would be scrolled into view instead. Besides limiting the
+  amount of scrolling that has to occur, this option also facilitates
+  the creation of entry screens in which related fields are grouped
+  together in distinct "pages".
+
+  const
+    ESpageUp     = 30;  {Previous page}
+    ESpageDown   = 31;  {Next page}
+
+  These two new commands perform one of two functions, depending on
+  whether or not an entry screen scrolls vertically. If it doesn't
+  (either because there aren't enough rows, or because TpEntryScrolls
+  isn't defined), ESpageUp will move the cursor to the first row on
+  the entry screen, and ESpageDown will move it the last row. If it
+  does scroll vertically, ESpageUp will move the cursor to the top of
+  the previous page, and ESpageDown will move it to the top of the
+  next page. Note, however, that by default these commands are not
+  assigned to any particular keys. If you want to use them, you must
+  assign them to keys--presumably <PgUp> and <PgDn>--using
+  AddEntryCommand (see Appendix C), like so:
+
+    {assign ESpageUp to <PgUp>, and ESpageDown to <PgDn>}
+    if not AddEntryCommand(ESpageUp,   1, $4900, 0) then ;
+    if not AddEntryCommand(ESpageDown, 1, $5100, 0) then ;
+
+  Keep in mind, however, that doing so will disable the ESnextRec and
+  ESprevRec commands--normally assigned <PgDn> and <PgUp>,
+  respectively--so you will probably want to reassign these commands
+  to new keys at the same time.
+
+  Note: In adding these commands, we have had to reassign several
+  existing commands to higher numbers. Although these changes could
+  affect existing programs, they are not likely to as long as commands
+  are referred to by name rather than value (e.g., 'ESquit' rather
+  than '42' or '44'). The only obvious exception would be a program
+  modelled on the TPKEYS demo that allows the user to reassign
+  commands to new keys. To try to prevent any disasters, we have
+  changed the ID string used to mark the start of TPENTRY's key array
+  from
+
+     EntryKeyID : string[17] = 'tpentry key array';
+
+  to
+
+     EntryKeyID : string[17] = 'tpentry keys-5.04';
+
+  We have also updated TPKEYS to reflect these changes.
+
+
+  {$IFDEF TpEntryScrolls}
+  procedure CopyVirtualScreenToWindow(var ESR : ESrecord);
+    {-Copy the virtual screen to the edit window}
+  {$ENDIF}
+
+  This procedure, intended primarily for internal use, is interfaced
+  for use by programs that need to write to the virtual screen
+  associated with a particular ESrecord (entry screen record), then
+  update the physical screen. If you really need to do this, you
+  should study the source code in TPENTRY.PAS. We will tell you,
+  however, that you need to do something like this:
+
+      {switch to the virtual screen}
+      ActivateVScreen(ESR.VS);
+
+      {** write to the virtual screen--see p. 2-68 **}
+
+      {switch back to the physical screen}
+      DeactivateVScreen;
+
+      {update the physical screen}
+      CopyVirtualScreenToWindow(ESR);
+
+   Please keep in mind that (1) CopyVirtualScreenToWindow does not
+   check to be sure that a virtual screen is actually in use and (2)
+   the virtual screen will always be completely cleared and redrawn
+   each time a call to either DrawEditScreen or EditScreen is made.
+   Incidentally, it is not necessary to hide the mouse prior to
+   calling CopyVirtualScreenToWindow or to unhide it afterward--that
+   is done automatically if UseMouse is defined.
+
+   More importantly, you should also realize that the virtual screen
+   will normally not be created until one of those two procedures has
+   been called (EditScreen calls DrawEditScreen). It is *not* created
+   by InitESrecord, as you might expect, because the bounds of the
+   window are not known until all the fields have been added. Instead,
+   it will be created the first time that it is needed by
+   DrawEditScreen. If there is not enough memory to allocate it,
+   TPENTRY will simply abort the program with an out-of-memory error.
+   If this behavior is unacceptable, you should call the following
+   procedure *after* adding the last field to your entry screen,
+   *after* any calls to SetEntryWindow, and *before* the first call to
+   either DrawEditScreen or EditScreen:
+
+    {$IFDEF TpEntryScrolls}
+    function EntryScrollCheck(var ESR : ESrecord) : Boolean;
+      {-Determine if window is scrollable. If so, allocate and
+        initialize virtual screen. Returns False only in case of
+        insufficient memory}
+    {$ENDIF}
+
+   This function determines whether or not an entry screen is
+   scrollable and, if it is, allocates a virtual screen for it. It
+   will return False only if the entry screen is scrollable *and*
+   there is insufficient memory to allocate the virtual screen for it.
+   It returns True if a virtual screen was allocated successfully, or
+   if none is needed. In a well-designed program that includes
+   scrollable entry screens, you will probably want to call this
+   function yourself so that you can handle the error more gracefully,
+   especially if your program uses lots of heap space.
+
+A few other words of warning:
+
+(1) Despite all the improvements, TPENTRY can still get bogged down if
+    the entry screen has a large number of fields, partly due to the
+    flexibility inherent in TPENTRY's design (the flexibility that
+    allows for user-definable data types, validation/conversion
+    routines, picture masks, etc.). On a '286 machine, performance is
+    generally bearable with 400 fields, as BEST.PAS demonstrates, but
+    you'll still see some brief delays when the entire entry screen
+    has to be redrawn. On slower machines, the threshold of pain will
+    be somewhat lower. We therefore continue to recommend that you
+    break large entry screens up into multiple, nested entry screens
+    if at all possible.
+
+(2) You should also keep in mind that, although TPENTRY now allows up
+    to 255 rows and up to 255 columns, you cannot create an 255 x 255
+    entry screen. Those limits are really somewhat arbitrary (as is
+    the limit of 2000 fields per entry screen). The actual limit is
+    imposed by Turbo Pascal's 64K limit on individual data structures.
+    Since the virtual screen now used to store an image of the entire
+    entry screen cannot exceed that limit, the product of the highest
+    row and column values for the entry screen cannot exceed 32,760
+    ($FFF1 div 2). In all likelihood, though, performance will become
+    a major issue long before you reach any of these limits.
+
+(3) Horizontal scrolling of the entry screen, if it is necessary at
+    all, takes place only when you move from one field to another. It
+    will never occur while editing a particular field. Although
+    TPENTRY tries to insure that the full edit field can be displayed
+    within the edit window, it will not generate an error if the edit
+    field is wider than the window. It is up to you to insure that
+    this is not the case. (Keep in mind, however, that the string
+    editor in TPENTRY can do horizontal scrolling of a different sort
+    when you need to edit strings longer than the width of the window.
+    See the discussion of the EditLen parameter to AddStringField, on
+    p. 3-43.)
+
+(4) In order to implement the enhancements described above, numerous
+    minor changes had to be made both to internal data structures and
+    to the parameter lists for certain procedures. In general, all
+    variables and parameters referring to field ID's (the value
+    assigned to a field in an entry screen) or entry screen
+    coordinates (the row and column where a field is displayed) were
+    changed from Bytes to Words. For most existing applications, these
+    changes should be completely transparent. There is one important
+    "gotcha" here, though. If your entry screen contains a multiple
+    choice field whose field ID is > 255, you will need to modify your
+    "IncValue" routine (see p. 3-17) so that the ID parameter is a
+    Word rather than a Byte.
+
+Other New Routines
+------------------
+
+Declaration
+  procedure ChangeFieldAttr(var ESR : ESrecord; FieldID : Word;
+                            A : Byte);
+Purpose
+  Change the field attribute for the specified field.
+Comments
+  This routine allows you to change the field attribute for a field
+  after it has been added to the entry screen, perhaps while within a
+  post-edit routine.
+
+  ESR is the entry screen, FieldID is the field to change, and A is
+  the new attribute. See the section on Hidden and Semi-Hidden Fields,
+  below, for a discussion of what this routine can be used for. Note
+  that a call to this procedure will change the attribute used to
+  display the field even if it is protected.
+
+
+Declaration
+  procedure ChangePromptAttr(var ESR : ESrecord; FieldID : Word;
+                             A : Byte);
+Purpose
+  Change the prompt attribute for the specified field.
+Comments
+  This routine allows you to change the prompt attribute for a field
+  after it has been added to the entry screen, perhaps while within a
+  post-edit routine.
+
+  See the section on Hidden and Semi-Hidden Fields, below, for a
+  discussion of what this routine can be used for. Note that a call to
+  this procedure will change the attribute used to display the prompt
+  even if the field is protected.
+
+Declaration
+  procedure ChangeProtectionFast(var ESR : ESrecord;
+                                 FieldID : Word;
+                                 OnOff : Boolean);
+Purpose
+  Modify the protection status of a field.
+Comments
+  This routine performs the same basic function as ChangeProtection,
+  except that it does not call ResetEntryScreenFlags. It is intended
+  to be used in place of ChangeProtection in cases where you are
+  changing the protection status of multiple fields at a time. Once
+  all the calls to ChangeProtectionFast have been made, you *must*
+  call ResetEntryScreenFlags *if* this routine is being called from
+  within a post-edit routine.
+
+  For further details, see the discussion of ResetEntryScreenFlags.
+  For an example of a case where ChangeProtectionFast is needed, see
+  BEST.PAS.
+
+
+Declaration
+  procedure ChangeRequired(var ESR : ESrecord;
+                           FieldID : Word;
+                           OnOff : Boolean);
+Purpose
+  Modify the required status of a field after it has been added.
+Comments
+  This routine is identical to the ChangeProtection routine described
+  on page 3-47 of the manual, except that it changes a field's
+  required status rather than its protection status.
+
+
+Declaration
+  procedure ChangeStringAttr(var ESR : ESrecord; FieldID : Word;
+                             A : Byte);
+Purpose
+  Change the string attribute for the specified field.
+Comments
+  This routine allows you to change the string attribute for a field
+  after it has been added to the entry screen, perhaps while within a
+  post-edit routine.
+
+  See the section on Hidden and Semi-Hidden Fields, below, for a
+  discussion of what this routine can be used for.
+
+
+Declaration
+  procedure ChangeValidation(var ESR  : ESrecord;
+                             FieldID  : Word;
+                             Validate : Pointer);
+Purpose
+  Change the validation routine for the specified field.
+Comments
+  This routine allows you to alter the validation routine for any
+  field in an entry screen. ESR is the entry screen. FieldId is the ID
+  number for the field. Validate is the address of the validation
+  routine. You might use ChangeValidation to specify a special
+  validation routine for a field of type Real, for example. Or you
+  might want to use two different validation routines for a given
+  field, with the choice of routines depending on whether validation
+  needs to be strict or relaxed in a given situation.
+Example
+  ChangeValidation(ESR, 5, @SpecialValidationRoutine);
+
+  Change the validation routine pointer for the sixth field in the
+  designated entry screen to point to SpecialValidationRoutine.
+
+
+Declaration
+  function CurrentFieldModified(var ESR : ESrecord) : Boolean;
+Purpose
+  Return True if current field was modified.
+Comments
+  This routine is intended to be used within a post-edit routine
+  (only!) to determine whether the current field was actually modified
+  by the user. It is especially useful in applications where the
+  post-edit routine must load data from disk based on the value of a
+  particular field, and you don't want to reread the same data
+  unnecessarily. See also the discussion of EvaluateEScommand, below.
+
+  Note that, if the current field is a multiple choice field,
+  CurrentFieldModified will return True only if the user has actually
+  left the field. (The multiple choice editor calls the post-edit
+  routine each time the user increments or decrements the value of the
+  field. This allows calculated fields that depend on the current
+  field to be updated constantly.)
+
+
+Declaration
+  function EvaluateEScommand(var ESR : ESrecord; ESC : EStype)
+    : FieldRecPtr;
+Purpose
+  Given a command, return a pointer to the field the cursor will
+  move to.
+Comments
+  This routine is intended to be called only from within a post-edit
+  routine. Given an entry screen record (ESR) and the code for the
+  last command entered by the user (stored in the global variable
+  LastEntryCommand), it calculates where EntryScreen will be moving
+  the cursor after the post-edit routine returns control. If the
+  cursor is not going to be moved at all, the function result will
+  equal ESR.CurrentField. Otherwise, it will point to the field to
+  move to.
+
+  EvaluateEScommand is especially useful in cases where a post-edit
+  routine needs to load additional data from disk after the user has
+  entered a value in a particular field. For example, after the user
+  enters a customer ID number, the post-edit routine might need to go
+  to disk to load the rest of the known data concerning that customer
+  (name, address, etc.).
+Example
+  {$F+}
+  procedure PostEditRoutine(var ESR : ESrecord);
+  var
+     FRP : FieldRecPtr;
+  begin
+    if (ESR.CurrentID = FieldOfInterest) then
+      if CurrentFieldModified(ESR) then begin
+        FRP := EvaluateEScommand(ESR, LastEntryCommand);
+        case FRP^.FieldID of
+          5..8 :
+            begin
+              {load some more data}
+              ...
+              DrawEditScreen(ESR);
+            end;
+        end;
+      end;
+  end;
+  {$F-}
+
+  This sample post-edit routine checks first to see if the cursor is
+  on a field of interest, then insures that the user actually modified
+  the field, then calls EvaluateEScommand. If the cursor is going to
+  be moved into a particular region of the entry screen (fields 5-8),
+  it loads new data from disk then redraws the entry screen.
+
+
+Declaration
+  procedure ResetEntryScreenFlags(var ESR : ESrecord);
+Purpose
+  Sets/clears a series of flags used internally by TPENTRY.
+Comments
+  This routine is intended primarily for internal use, but it is
+  interfaced for use by the programmer in cases where
+  ChangeProtectionFast is being called from within a post-edit
+  routine. This routine does not need to be called except in that one
+  very specific case. In all other cases where it needs to be called,
+  TPENTRY will call it itself.
+
+  What this routine does (in case you are interested) is to follow the
+  linked list of fields that make up an entry screen, setting flags to
+  mark those fields that are on the first or last row of the entry
+  screen. These flags simplify and speed up certain operations.
+
+  For an example of a case where both ResetEntryScreenFlags and
+  ChangeProtectionFast are needed, see BEST.PAS. There is also a brief
+  discussion of such cases in the section on Hidden and Semi-Hidden
+  Fields, below.
+
+
+Declaration
+  procedure SetAllFieldLinks(var ESR : ESrecord; var LinksMap);
+Purpose
+  Set the forward and backward links for all fields in an entry
+  screen.
+Comments
+  This routine allows you to modify the order in which fields are
+  "visited" as you move through an entry screen by specifying an
+  explicit "forward link" for each field. (The forward link is the
+  field to move the cursor to when <Enter> is pressed.)
+
+  ESR is the entry screen whose forward links are to be modified. The
+  variable passed as the LinksMap parameter should be an 'array[0..n]
+  of Word', where n is the ID number of the last field in the entry
+  screen. Each element in the array specifies the forward link for
+  that field: LinksMap[0] has the forward link for field 0,
+  LinksMap[1] has the forward link for field 1, and so on. Note that,
+  given this list of forward links, SetAllFieldLinks will
+  automatically calculate the appropriate backward links to insure
+  logical behavior when the cursor is being moved backward (with
+  <ShiftTab>, for example).
+
+  If a particular field is protected, you should set its forward link
+  to 'BadFieldId' (= $FFFF) *unless* the field in question will later
+  be unprotected (by a post-edit routine, perhaps). Note that
+  EditScreen will ignore any forward or backward link that points to a
+  protected field and revert to the default behavior of moving the
+  cursor to the next/previous unprotected field added to the list.
+
+  Important point: When setting the backward links for all the fields,
+  SetAllFieldLinks assumes that each unprotected field in the entry
+  screen is named as the forward link for one of the other fields, and
+  that only one field names a given field as its forward link. More
+  specifically, when setting the backward link for field N, it scans
+  the list of forward links looking for another field that points to
+  N. The first one that it finds becomes the backward link for field
+  N. If none is found, the backward link is set to BadFieldID,
+  indicating that EditScreen should apply its usual set of rules for
+  determining where to move the cursor. In general, then, it is best
+  to use SetAllFieldLinks to establish a perfect loop linking all
+  unprotected fields in the entry screen together (see the example
+  below), then use SetFieldLinks to make any minor changes to
+  individual links (to prevent wrapping at the edges of the entry
+  screen, for example, which can be done by setting a field's forward
+  or backward link to point to itself).
+
+  Note that calls to SetAllFieldLinks have no effect on the behavior
+  of the <Up> and <Down> commands. Those commands will always move the
+  cursor to the field immediately above or below the current field. If
+  you want <Up> and <Down> to move the cursor to the next/previous
+  field, you can reassign them to the ESprevField and ESnextField
+  commands, respectively, using the AddEntryCommand routine described
+  in Appendix C.
+Example
+    const LinksMap : array[0..5] of Word =
+      {field: 0  1  2  3  4  5}
+             (1, 3, 0, 4, 2, BadFieldId);
+    ...
+    SetAllFieldLinks(ESR, LinksMap);
+    ...
+    ExitCommand := EditScreen(ESR, 2, False);
+
+  Here the entry screen is set up such that the cursor starts at field
+  2, then moves to fields 0, 1, 3, 4 (and then back to 2), in that
+  order. Field 5 is a protected field, so no forward link is needed
+  for it.
+
+
+Declaration
+  procedure SetFieldLinks(var ESR : ESrecord;
+                          FieldID, Next, Prev : Word);
+Purpose
+  Specify the fields to jump to when <Enter> or <ShTab> pressed on a
+  given field.
+Comments
+  This routine allows you to modify the order in which fields are
+  "visited" as you move through an entry screen by specifying explicit
+  backward and forward links. It may be called at any time after the
+  field associated with FieldID has been added to the entry screen,
+  even if the fields denoted by Next and Prev have not been added yet.
+
+  ESR is the entry screen, and FieldID is the field whose forward
+  and/or backward links you want to change. Next is the ID for the
+  field to jump to when <Enter> is pressed (or any other event that
+  causes the cursor to be moved to the next field). Prev is the ID for
+  the field to jump to when <ShiftTab> is pressed (or any other event
+  that causes the cursor to be moved to the previous field).
+
+  If you want to override only the forward link, you can specify
+  'BadFieldId' (= $FFFF) as the Prev parameter. To override only the
+  backward link, specify BadFieldId as the Next parameter. (When a
+  forward or backward link is BadFieldId, EditScreen will simply apply
+  its usual set of rules for determining where to move the cursor.
+  That is, it will move the cursor to the next or previous unprotected
+  field, wrapping to the top or bottom of the entry screen if
+  necessary and if the current wrap mode allows it.)
+
+  Although SetAllFieldLinks is easier to use when numerous changes
+  must be made, SetFieldLinks provides greater flexibility. Multiple
+  fields may safely be given the same forward link, for example, and
+  individual links may be changed easily at any time--even from within
+  a post-edit routine.
+
+  Note that calls to SetFieldLinks have no effect on the behavior of
+  the <Up> and <Down> commands. Those commands will always move the
+  cursor to the field immediately above or below the current field. If
+  you want <Up> and <Down> to move the cursor to the next/previous
+  field, you can reassign them to the ESprevField and ESnextField
+  commands, respectively, using the AddEntryCommand routine described
+  in Appendix C.
+Example
+    SetFieldLinks(ESR, 0, 1, 2);
+    SetFieldLinks(ESR, 1, 3, 0);
+    SetFieldLinks(ESR, 2, 0, 4);
+    SetFieldLinks(ESR, 3, 4, 1);
+    SetFieldLinks(ESR, 4, 2, 3);
+    ...
+    ExitCommand := EditScreen(ESR, 2, False);
+
+  Here the entry screen is set up such that the cursor starts at field
+  2, then moves to fields 0, 1, 3, 4 (and then back to 2) in that
+  order. Contrast this example with the one for SetAllFieldLinks,
+  above, which does the same thing.
+
+
+Declaration
+  procedure SetProtectAttrs(PromptA, FieldA : Byte);
+Purpose
+  Set prompt and field attributes to be used for protected fields.
+Comments
+  This routine allows you to specify the attributes to be used when
+  displaying protected fields. When using it, you should keep in mind
+  that subsequent calls to SetPromptAttr and/or SetFieldAttr will
+  override the settings specified here. (In order to avoid breaking
+  existing programs, those two routines have to set the default
+  attributes for both protected and unprotected fields.)
+Examples
+    SetProtectAttrs(7, 7);
+    SetPromptAttr($B);
+    SetFieldAttr($F);
+
+  Wrong! The settings specified in the call to SetProtectAttrs will be
+  overridden by the subsequent calls to SetPromptAttr and
+  SetFieldAttr.
+
+    SetPromptAttr($B);
+    SetFieldAttr($F);
+    SetProtectAttrs(7, 7);
+
+  Correct.
+
+
+Declaration
+  procedure SetUpdatePtr(var ESR : ESrecord; P : Pointer);
+Purpose
+  Set pointer to routine to call after entire entry screen is redrawn.
+Comments
+  This routine, added in version 5.07, allows you to specify the
+  address of a procedure that will be called each time that the
+  specified entry screen (ESR) is redrawn in its entirety. Your
+  procedure should be of the form:
+
+    {$F+}
+    procedure MyUpdateProc(var ESR : ESrecord);
+    begin
+    end;
+    {$F-}
+
+  The primary purpose for this hook is to allow ordinary text strings
+  to be displayed within a scrollable entry screen.
+
+  If ESR is indeed scrollable, then its virtual screen will be active
+  at the time your update procedure is called. You may write text to
+  the virtual screen using FastWrite or any of its kin (see the
+  TPWINDOW chapter of the manual for a discussion of how to write to
+  virtual screens). For example,
+
+     FastWrite('------ Divider ------', 75, 20, $07);
+
+  would write the specified text to row 75 of the virtual screen.
+
+  If ESR is not scrollable, your update procedure will be writing to
+  the physical screen, rather than a virtual screen. Please note that,
+  although an entry screen has window coordinates associated with it,
+  TPENTRY does not call the Window() procedure in TPCRT, so you should
+  not use routines that take window-relative coordinates (such as
+  FastWriteWindow) to display text inside the entry window. Use
+  routines (such as FastWrite) that take absolute coordinates instead.
+
+Hidden and Semi-Hidden Fields
+-----------------------------
+Several customers have requested ways to temporarily hide and unhide
+fields, and to suppress the display of a field's value in certain
+situations. In versions prior to 5.05, such things were difficult to
+do, but with the additions of the ChangeFieldAttr, ChangePromptAttr,
+and ChangeStringAttr procedures it is now relatively easy to handle
+these cases. Below are descriptions of some common situations and
+brief explanations of how to handle them. Note that all these
+descriptions assume that you have read the section in the manual
+concerning Calculated Fields (where the concept of the post-edit
+routine is introduced).
+
+ (1) You have a calculated field of type Real used to display
+     profit/loss. If the value is negative, you want the field to be
+     displayed in red; if it is positive, in black. The solution here
+     is to have your post-edit routine (which is already calculating
+     the value of the field) call ChangeFieldAttr to set the field
+     attribute based on the current value. If you're initializing the
+     entry screen once and using it to edit multiple records (as is
+     done in ENTRY.PAS), don't forget to initialize the field
+     attribute each time you go to edit a new record.
+
+ (2) Same as (1), but the field is not protected, and you want the
+     field displayed in red (if it is negative) even while editing it.
+     In this case you would call ChangeStringAttr as well as
+     ChangeFieldAttr.
+
+ (3) You have a numeric field whose initial value is 0, and you want
+     the field to appear as a complete blank until its value is
+     non-zero. The solution to this problem is demonstrated by
+     ENTRY.PAS in its handling of the Wage field, and it is
+     essentially identical to that described for (1) above. The main
+     difference is in the choice of attributes. When the field's value
+     is 0, you simply set the foreground portion of the field
+     attribute equal to the background color: if the background color
+     were black, you would use $00; if it were blue, you would use
+     $11; if it were light gray, you would use $77; and so on. When
+     the field's value is non-zero, you change the field attribute to
+     something that will make the contents of the field visible. In
+     either case, you would then redraw the field with DrawEditField.
+     (See the SetWageFieldAttribute and UpdateHandler procedures in
+     ENTRY.PAS.)
+
+ (4) You have a calculated field that you want to hide completely when
+     its value is 0. The solution is essentially the same as the one
+     for (3), except that you need to hide the prompt (using
+     ChangePromptAttr) as well as the field itself. ENTRY demonstrates
+     the technique in its handling of the Age field. (See the
+     SetAgeFieldAttribute and UpdateHandler procedures in ENTRY.PAS.)
+
+ (5) You have a field that is needed only if the value in one of the
+     other fields is within a certain range. When it is not needed,
+     you don't want it displayed at all. The solution here is similar
+     to the one for (4), except that you also need to use
+     ChangeProtection to protect the field when it is hidden and
+     unprotect it when it is unhidden.
+
+ (6) Your entry screen has a variable number of fields, with the
+     actual number of fields depending on a value entered by the user
+     in one of the fields in the same entry screen. Although this
+     sounds like a complex case, it is essentially the same as case
+     (5), except that there are multiple fields to be hidden/unhidden
+     at a time rather than one, and consequently you need to use
+     ChangeProtectionFast and ResetEntryScreenFlags rather than
+     ChangeProtection. For an example of how to handle this situation,
+     see the UpdateHandler and HideFields routines in BEST.PAS.
+
+Validation Routines Revisited
+-----------------------------
+
+When writing the manual, we underestimated the amount of information
+users would want about how to write custom validation routines. Our
+basic advice on this topic remains the same: the best way to learn how
+to write them is to study the built-in validation routines. If
+possible, find one that is close to what you need, copy it into your
+program, then modify it to suit your needs.
+
+We admit, however, that there is one fairly common case that is not
+addressed by any of the standard validation routines, the case where
+an entry is valid only if it appears in a list of acceptable answers.
+We have therefore modified ENTRY.PAS to include an example of how to
+write this kind of validation routine.
+
+If you look at the ValidState routine, you'll see that (among other
+things) it scans a list of valid state abbreviations checking to see
+if the user's entry appears in the list. You may also notice that it
+uses the new global variable LastEntryCommand (described below) to
+determine what the last command was. If it was ESuser1 (<F2>) or
+ESclickExit (<ClickLeft>), no validation is performed because those
+commands indicate that the pick list of state abbreviations is about
+to be displayed. Note too that the call to ValidateNotPartial within
+the routine is really unnecessary in this case. It is included
+primarily to demonstrate how multiple types of validation may be
+performed within a single validation routine. If the user enters a
+single letter (e.g., 'C'), the error message will be 'Partial entries
+not allowed here.'. If the field is full but the abbreviation is
+invalid (e.g., 'CS'), the error message will be 'Not a valid
+abbreviation for a state.'.
+
+When writing your own validation routines, don't forget that (1) they
+must be compiled under the FAR model (using {$F+}) and (2) they may
+not be nested within another procedure. This same rule applies, of
+course, to any user-written procedure that is going to be called from
+a routine in another unit.
+
+Miscellaneous Changes/Enhancements to TPENTRY
+---------------------------------------------
+
+In versions prior to 5.03, AutoAdvance was always forced off for entry
+screens containing a single field. This has been changed so that the
+programmer may decide whether or not AutoAdvance is desirable in such
+cases. Note, however, that single-field entry screens are still
+treated as special cases: cursor movement commands such as <Left>,
+<Right>, <CtrlLeft>, <CtrlRight>, <Tab>, and <ShiftTab> cannot be used
+to exit from a field as they can in multi-field entry screens. Note
+too that the EditString routine, which creates a single-field entry
+screen, does force AutoAdvance off.
+
+Several customers have called to ask how they can determine, from
+within a validation routine, what command was last issued by the user.
+Because there was previously no way to do so, in 5.04 we added the
+following global variable for this purpose:
+
+  const
+    LastEntryCommand : EStype = ESnone;
+
+LastEntryCommand can also be used for other, more sinister purposes
+from within a post-edit routine. If you need to force the cursor to
+jump to another field (something that was previously impossible), you
+can now do so like this:
+
+   {cancel the user's last command}
+   LastEntryCommand := ESnone;
+
+   {jump to new field}
+   ESR.CurrentField := FindFieldID(ESR, TargetFieldID);
+
+where ESR is the first parameter passed to your post-edit routine, and
+TargetFieldID is the ID for the field to jump to. Similarly, you can
+force an exit from the screen editor by setting LastEntryCommand to
+any exit command (ESquit or ESdone, for example). Neither of these
+dirty tricks is encouraged, but you may use them when no cleaner
+alternative presents itself.
+
+As of version 5.06, LastEntryCommand may also be changed from within a
+pre-edit routine in order to force a field editor to execute a
+particular command. This would allow you, for example, to display a
+pick list from within your pre-edit routine, move the user's choice
+into the variable associated with the current field, then use the
+statement
+
+  {force the field editor to exit immediately; move cursor to next
+   field}
+  LastEntryCommand := ESnextField;
+
+to force the field editor to exit immediately and move the cursor to
+the next field. It is also now possible (and safe) to change the
+CurrentField from within a pre-edit routine (forcing the cursor to
+jump to another field):
+
+   {jump to new field}
+   ESR.CurrentField := FindFieldID(ESR, TargetFieldID);
+
+But if you do so any command assigned to LastEntryCommand will be
+ignored because the field editor will not be called for the field that
+was current at the time your pre-edit routine was called.
+
+As of version 5.05, the size of the table used to store key
+assignments (EntryKeySet) has been increased from 210 to 240.
+
+As of version 5.05, the ChangeProtection procedure can now be used
+safely from within a post-edit routine on *any* field. The warnings
+concerning its use that appear in the manual on page 3-47 no longer
+apply.
+
+As of version 5.07, you can suppress the display of 0's in empty time
+fields by initializing the variable in question to BadTime, and
+setting both the minimum and maximum values for the field to MinTime
+(0). You can do the same thing with date fields as well, as is
+demonstrated in ENTRY.PAS: initialize the date variable to BadDate,
+and set the minimum and maximum values for the field to MinDate (0).
+
+As of version 5.07, it is now possible to use a picture mask such as
+'mm/yy' for date fields. A day number of 1 will be assumed. As before,
+you may also use a picture mask such as 'mm/dd'; the global variable
+DefaultYear (initialized to the current year) specifies the year that
+will be assumed.
+
+As of version 5.12, the following constants have been added to
+TPENTRY:
+
+const
+  Subst1     = #1; {for user-defined substitutions}
+  Subst2     = #2;
+  Subst3     = #3;
+  Subst4     = #4;
+  Subst5     = #5;
+  Subst6     = #6;
+  Subst7     = #7;
+  Subst8     = #8;
+  SubstChars : array[Subst1..Subst8] of Char = (
+    #1, #2, #3, #4, #5, #6, #7, #8);
+
+The SubstChars array allows you to alter the characters substituted
+for the literal picture mask characters Subst1..Subst8 (#1..#8). For
+example, you could use the following technique to insert a literal '.'
+(normally interpreted as a decimal point) into a picture mask:
+
+  PictureMask := '!!!!!!!!'#1'!!!';
+  SubstChars[#1] := '.';
+
+  Result -> 'FILENAME.EXT'
+
+

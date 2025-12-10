@@ -1,0 +1,1834 @@
+  procedure SwapStrings(var S1, S2 : string);
+    {-Swap two strings}
+  begin
+    ExchangeStructs(S1, S2, MaxWord(Length(S1), Length(S2))+1);
+  end;
+
+  procedure ToggleInsertMode;
+    {-Toggle between insert and overtype mode, keeping BIOS keyboard flag up
+      to date}
+  var
+    BiosKbdFlag : ^Byte {absolute $0040 : $0017}; {!!.21}
+  begin
+    BiosKbdFlag := Ptr(BiosDataSele, $17); {!!.21}
+
+    {toggle insert flag}
+    InsertMode := not InsertMode;
+
+    {use fat cursor if inserting}
+    if InsertMode then begin
+      FatCursor;
+      BiosKbdFlag^ := BiosKbdFlag^ or $80;  {!!.21}
+    end
+    else begin
+      NormalCursor;
+      BiosKbdFlag^ := BiosKbdFlag^ and $7F; {!!.21}
+    end;
+  end;
+
+  function OKtoAdvance(ESC : EStype; var FR : FieldRec) : Boolean;
+    {-Verify that it's OK to go to next/previous field if requested}
+  begin
+    case ESC of
+      ESright,
+      ESwordRight,
+      EStab,
+      ESdownField :
+        OKtoAdvance := not FlagIsSet(FR.XFlags, ProhibitNextField);
+      ESnextField :
+        OKtoAdvance := FlagIsSet(FR.XFlags, SingleFieldMask) or
+                   not FlagIsSet(FR.XFlags, ProhibitNextField);
+      ESleft,
+      ESwordLeft,  {**}
+      ESbackTab,
+      ESupField,
+      ESprevField :
+        OKtoAdvance := not FlagIsSet(FR.XFlags, ProhibitPrevField);
+      else
+        OKtoAdvance := True;
+    end;
+  end;
+
+  {$IFDEF UseMouse}
+    function FindSelectedField(var ESR : ESrecord) : EStype;
+      {-Find the field selected with the mouse, if any. Returns ESnone if field
+        is not found}
+    var
+      FRP : FieldRecPtr;
+      TargetRow, TargetCol : Word;
+      HD : Byte;
+      {$IFDEF TpEntryScrolls}
+      SBmax : Word;
+      MCPos, Row : Word;
+      {$ENDIF}
+
+      function OnField(Row, StartCol : Word; Len : Byte) : Boolean;
+        {-Returns True if the mouse cursor was on this field when the last
+          button press was retrieved}
+      var
+        EndCol : Word;
+      begin
+        {assume failure}
+        OnField := False;
+
+        {get out if Len = 0}
+        if Len = 0 then
+          Exit;
+
+        {adjust coordinates}
+        FixCoordinates(ESR, Row, StartCol);
+
+        {exit if field is not on target row}
+        with ESR do
+         if (Row <> TargetRow) then
+            Exit;
+
+        {check the column coordinates}
+        EndCol := StartCol+Pred(Len);
+        if (TargetCol >= StartCol) and (TargetCol <= EndCol) then
+          OnField := True;
+      end;
+
+      {$IFDEF TpEntryScrolls}
+      function SeekToFirstFieldOn(Row : Integer; GoForward : Boolean) : EStype;
+        {-Find the first unprotected field on or near Row}
+      var
+        FRP, SaveFRP : FieldRecPtr;
+        CurRow : Word;
+      begin
+        with ESR do begin
+          SeekToFirstFieldOn := ESnone;
+          CurRow := CurrentField^.eRow;
+
+          {force a move in the right direction}
+          if GoForward and (Row <= CurRow) then
+            Inc(Row)
+          else if (not GoForward) and (Row >= CurRow) then
+            Dec(Row);
+
+          {don't go too far}
+          if (Row < FirstRow) then
+            Row := FirstRow
+          else if Row > LastRow then
+            Row := LastRow;
+
+          {are we already there?}
+          if Row = CurRow then
+            Exit;
+
+          if GoForward then begin
+            FRP := CurrentField^.NextField;
+            while FRP <> nil do begin
+              with FRP^ do
+                {skip protected fields}
+                if (not FieldIsProtected(FRP)) and (eRow >= Row) then begin
+                  NewFieldID := FieldID;
+                  SeekToFirstFieldOn := ESmouse;
+                  Exit;
+                end;
+              FRP := FRP^.NextField;
+            end;
+          end
+          else begin
+            FRP := CurrentField^.PrevField;
+            while FRP <> nil do begin
+              with FRP^ do
+                {skip protected fields}
+                if (not FieldIsProtected(FRP)) and (eRow <= Row) then begin
+                  Row := eRow;
+                  SaveFRP := FRP;
+
+                  {find the first unprotected field on the row}
+                  while (FRP^.PrevField <> nil) and (FRP^.PrevField^.eRow = Row) do begin
+                    {point to next field}
+                    FRP := FRP^.PrevField;
+
+                    {save the current field if it's not protected}
+                    if not FieldIsProtected(FRP) then
+                      SaveFRP := FRP;
+                  end;
+
+                  NewFieldID := SaveFRP^.FieldID;
+                  SeekToFirstFieldOn := ESmouse;
+                  Exit;
+                end;
+              FRP := FRP^.PrevField;
+            end;
+          end;
+        end;
+      end;
+      {$ENDIF}
+
+    begin
+      {assume failure}
+      FindSelectedField := ESnone;
+      if not EntryMouseEnabled then
+        Exit;
+
+      {convert mouse X and Y coordinates to absolute row and col}
+      TargetRow := MouseKeyWordY+MouseYLo;
+      TargetCol := MouseKeyWordX+MouseXLo;
+
+      with ESR do begin
+
+        {$IFDEF TpEntryScrolls}
+
+        {check to see if mouse is somewhere on the scroll bar}
+        if HaveScrollBar and (TargetCol = (XH+2)) then begin
+          {are we at the up arrow?}
+          if TargetRow = YL then begin
+            {don't wrap around}
+            if CurrentField^.eRow > FirstRow then
+              FindSelectedField := ESupField;
+          end
+          {are we at the down arrow?}
+          else if TargetRow = YH+2 then begin
+            {don't wrap around}
+            if CurrentField^.eRow < LastRow then
+              FindSelectedField := ESdownField;
+          end
+          else begin
+            MCPos := Pred(TargetRow-YL);
+            SBmax := YH-YL;
+            if MCPos <> SliderPos then begin
+              if MCPos = SBmax then
+                Row := LastRow
+              else begin
+                {iterate until proper Row found}
+                Row := 1;
+                while (Row <= LastRow) and (CalcSliderPos(ESR, Row) <> MCpos) do
+                  Inc(Row);
+              end;
+
+              {find the first unprotected field on the row}
+              FindSelectedField := SeekToFirstFieldOn(Row, MCpos > SliderPos);
+            end;
+          end;
+
+          Exit;
+        end;
+
+        {$ENDIF}
+
+        {done if mouse is outside inner window}
+        if (TargetCol <= XL) or (TargetCol >= XH+2) or
+           (TargetRow <= YL) or (TargetRow >= YH+2) then
+             Exit;
+
+        {start with first field}
+        FRP := FirstField;
+
+        {look through the entire linked list of fields}
+        while FRP <> nil do begin
+          {skip protected fields}
+          if not FieldIsProtected(FRP) then
+            with FRP^ do begin
+              {check the location of both the prompt and the edit field}
+              HD := Ord((LeftD <> #0) and (RightD <> #0));
+              if OnField(pRow, pCol, Length(Prompt^)) or
+                 OnField(eRow, eCol-HD, EditLen+HD+HD) then begin
+                {we found the field--store its ID number in NewFieldID and exit}
+                NewFieldID := FRP^.FieldID;
+                FindSelectedField := ESmouse;
+                Exit;
+              end;
+            end;
+          {advance to next field}
+          FRP := FRP^.NextField;
+        end;
+      end;
+    end;
+  {$ENDIF}
+
+  {$IFDEF IncludeChoice}
+  function ChoiceEditor(var ESR : ESrecord; FR : FieldRec) : EStype;
+    {-Edit a multiple choice field}
+  var
+    Row, Col : Word;
+    CursorSL : Word;
+    SaveBreak : Boolean;
+    ESC : EStype absolute LastEntryCommand;
+    Done : Boolean;
+    ChWord : Word;
+    Ch : Char absolute ChWord;
+    St : string;
+    StLen : Byte absolute St;
+    Choice : Byte;
+    StBgn : Byte;
+    Scrap : RangeType;
+    PFlags : PictureFlags;
+    FirstTime : Boolean;
+    {$IFDEF UseMouse}
+    SaveWaitState : Boolean;
+    {$ENDIF}
+
+    procedure Init;
+      {-Find StBgn}
+    var
+      I : Word;
+    begin
+      InitPictureFlags(FR.Picture^, PFlags);
+      StBgn := 0;
+      for I := 1 to Length(FR.Picture^) do
+        if PFlags[I] then begin
+          StBgn := I;
+          Exit;
+        end;
+    end;
+
+    procedure Redraw;
+      {-Position cursor and redraw string}
+    (*               {!!.08}
+    var
+      Tmp : string;
+    *)               {!!.08}
+    begin
+      with FR do begin
+        {merge the string with the picture}
+                                   {!!.08      }
+        MergePicture(Picture^, St, EditSt^ {Tmp}, EditFlags);
+
+        {draw the result and position the cursor}
+                       {!!.08      }
+        DrawEditString({Tmp} EditSt^, Row, Col, EditLen, 0, StringAttr, StringAttr,
+          PadChar, EditFlags, Picture^, PFlags);
+        GoToXYabs(Col+Pred(StBgn), Row);
+      end;
+    end;
+
+    procedure ConvertToString(I : Integer; CallPostEdit : Boolean);
+      {-Convert the value to a string}
+    begin
+      with FR do begin
+        ESchoicePtr := ValidatePtr;
+        IncChoiceRoutine(VarPtr^, FieldID, I, St);
+
+        {call post-edit routine?}
+        if CallPostEdit then
+          {call user-defined screen update routine if any}
+          if ESR.PostEditPtr <> nil then begin
+            ESpostEditPtr := ESR.PostEditPtr;
+            ScreenUpdateRoutine(ESR);
+          end;
+      end;
+    end;
+
+    procedure Error;
+      {-Ring bell on invalid input if desired}
+    begin
+      if ESR.BeepOnError then
+        RingBell;
+    end;
+
+  begin
+    {adjust coordinates if desired}
+    Row := FR.eRow;
+    Col := FR.eCol;
+    FixCoordinates(ESR, Row, Col);
+
+    {store cursor shape and set it}
+    CursorSL := CursorTypeSL;
+    InsertMode := not InsertMode;
+    ToggleInsertMode;
+
+    {save break checking state}
+    SaveBreak := CheckBreak;
+    CheckBreak := False;
+
+    {find place to put the cursor}
+    Init;
+
+    {clear modified flag}
+    ClearFlag(ESR.CurrentField^.XFlags, ModifiedMask);
+
+    {initialize Scrap}
+    Move(FR.VarPtr^, Scrap, FR.DPlaces);
+    ConvertToString(0, False);
+
+    {loop reading keys}
+    Done := False;
+    FirstTime := (ESC <> ESnone);
+    repeat
+      {redraw string}
+      Redraw;
+
+      {get next command and validate it}
+
+      {$IFDEF UseMouse}
+        SaveWaitState := WaitForButtonRelease;
+        WaitForButtonRelease := True;
+      {$ENDIF}
+
+      if FirstTime then
+        FirstTime := False
+      else
+        ESC := GetCommand(EntryKeySet, EntryKeyPtr, ChWord);
+
+      {$IFDEF UseMouse}
+        WaitForButtonRelease := SaveWaitState;
+      {$ENDIF}
+
+      if ESR.ReadOnlyFlag then begin
+        if not(ESC in ReadOnlyCommands) then
+          ESC := ESnone;
+      end
+      else if not(ESC in ChoiceCommands) then
+        ESC := ESnone;
+
+      case ESC of
+        ESdecChoice :        {decrement choice}
+          if not ESR.ReadOnlyFlag then
+            ConvertToString(-1, True);
+
+        ESincChoice :        {increment choice}
+          if not ESR.ReadOnlyFlag then
+            ConvertToString(1, True);
+
+        EStab,
+        ESright,
+        ESwordRight,
+        ESbackTab,
+        ESleft,
+        ESwordLeft,
+        ESnextField..ESdone : {various exit commands (in this context)}
+          Done := True;
+
+        ESrestore,           {Restore default and continue}
+        ESquit :             {Restore default string and quit}
+          begin
+            Move(Scrap, FR.VarPtr^, FR.DPlaces);
+            ConvertToString(0, True);
+            Done := (ESC = ESquit);
+          end;
+
+        EShelp :             {Invoke help system}
+          if EntryHelpPtr <> nil then
+            CallEShelp(HelpForEntry, nil, FR.HelpIndex);
+
+        {$IFDEF UseMouse}
+        ESmouse :             {new field selected by mouse}
+          if ESR.FieldCount = 1 then begin
+            ESC := ESnextField;
+            Done := True;
+          end
+          else begin
+            ESC := FindSelectedField(ESR);
+            case ESC of
+              ESmouse :
+                if (ESR.NewFieldID = ESR.CurrentID) then begin
+                  if not ESR.ReadOnlyFlag then
+                    if FlagIsSet(FR.XFlags, AllowClickExit) then begin
+                      ESC := ESclickExit;
+                      Done := True;
+                    end
+                    else
+                      {increment instead of exiting}
+                      ConvertToString(1, True);
+                end
+                else
+                  Done := True;
+              ESdownField,
+              ESupField :
+                Done := True;
+            end;
+          end;
+        {$ENDIF}
+
+        else
+          Error;
+      end;
+
+      {make sure it's OK to go to next/previous field}
+      if Done then
+        Done := OKtoAdvance(ESC, FR);
+    until Done;
+
+    {set modified flag}
+    if ESC <> ESquit then
+      if CompStruct(Scrap, FR.VarPtr^, FR.DPlaces) <> Equal then
+        SetFlag(ESR.CurrentField^.XFlags, ModifiedMask);
+    {!!.08}
+    {redraw the string one last time}
+    Redraw;
+
+    {restore break checking status}
+    CheckBreak := SaveBreak;
+
+    {restore cursor shape}
+    SetCursorSize(Hi(CursorSL), Lo(CursorSL));
+
+    {return the exit code}
+    ChoiceEditor := ESC;
+  end;
+  {$ENDIF}
+
+  {$IFDEF IncludeNumeric}
+  function NumberEditor(var ESR : ESrecord; FR : FieldRec) : EStype;
+    {-Edit a string}
+  const
+    NumLockBit = $20;
+  var
+    Row, Col : Word;
+    CursorSL : Word;
+    SaveBreak : Boolean;
+    SaveInsertMode : Boolean;
+    KeyboardFlags : ^Byte {absolute $40 : $17}; {!!.21}
+    SaveNumLock : Boolean;
+    ErrCode : Byte;
+    ErrorMsg : StringPtr;
+    ESC : EStype absolute LastEntryCommand;
+    FirstChar : Boolean;
+    Done : Boolean;
+    PicChar : Char;
+    ChWord : Word;
+    Ch : Char absolute ChWord;
+    StEnd : Byte;
+    St : string;
+    StLen : Byte absolute St;
+    SaveEditSt : string;
+    SP : Byte;
+    MaxLen : Word;
+    DotPos : Byte;
+    Places : Word;
+    HaveMinus : Boolean;
+    MinusPos : Byte absolute HaveMinus;
+    PFlags : PictureFlags;
+    FirstTime : Boolean;
+    {$IFDEF UseMouse}
+    SaveWaitState : Boolean;
+    {$ENDIF}
+
+    procedure Init;
+      {-Do all one-time initialization stuff}
+    var
+      I : Word;
+    begin
+      with FR do begin
+        HaveMinus := False;
+        DotPos := Pos(DecimalPt, Picture^);
+        CalcWidthAndPlaces(Picture^, MaxLen, Places, DPlaces);
+        if DotPos <> 0 then
+          Dec(MaxLen);
+
+        {set up flags array}
+        InitPictureFlags(Picture^, PFlags);
+        if DotPos <> 0 then
+          PFlags[DotPos] := True;
+        StEnd := 0;
+        for I := 1 to Length(Picture^) do
+          if PFlags[I] then
+            StEnd := I;
+      end;
+    end;
+
+    procedure FixString(var St : string);
+      {-Fix up the string we're editing to make it look right}
+    var
+      StLen : Byte absolute St;
+      I, J : Word;
+    begin
+      if (DotPos <> 0) then begin
+        {fill in 0's as necessary}
+        J := StLen;
+        for I := 1 to Succ(Places) do begin
+          if St[J] = ' ' then
+            St[J] := '0';
+          Dec(J);
+        end;
+
+        {insert the decimal point}
+        Insert('.', St, StLen-Pred(Places));
+      end;
+
+      {trim blanks}
+      TrimSpacesPrim(St);
+
+      {if string is empty, put in a 0}
+      if StLen = 0 then begin
+        StLen := 1;
+        St[1] := '0';
+      end;
+
+      {prepend the minus sign}
+      if HaveMinus then
+        Insert('-', St, 1);
+    end;
+
+    procedure Redraw;
+      {-Position cursor and redraw string}
+    var
+      Tmp : String;
+    begin
+      with FR do begin
+        {merge the string we're editing with the picture}
+        Tmp := St;
+        FixString(Tmp);
+        MergePicture(Picture^, Tmp, Tmp, EditFlags);
+
+        {draw the result and position the cursor}
+        DrawEditString(Tmp, Row, Col, EditLen, 0, StringAttr, StringAttr,
+          PadChar, EditFlags, Picture^, PFlags);
+        GoToXYabs(Col+Pred(StEnd), Row);
+      end;
+    end;
+
+    procedure ReInit;
+      {-Load the default string for editing}
+    var
+      I, J : Word;
+      NeedToTrim : Boolean;
+    begin
+      {strip the picture}
+      StripPicture(FR.Picture^, FR.EditSt^, St);
+      TrimSpacesPrim(St);
+
+      {trim trailing zeros if the value is 0}
+      I := Pos('.', St);
+      if I <> 0 then begin
+        NeedToTrim := True;
+        for J := Succ(I) to Length(St) do
+          case St[J] of
+            '1'..'9' : NeedToTrim := False;
+          end;
+        for J := Pred(I) downto 1 do
+          case St[J] of
+            '1'..'9' : NeedToTrim := False;
+          end;
+        if NeedToTrim then
+          TrimTrailingZeros(St);
+      end;
+
+      {remove the minus sign if there is one}
+      HaveMinus := Pos('-', St) = 1;
+      if HaveMinus then
+        Delete(St, 1, 1);
+
+      {remove the decimal point if there is one}
+      if DotPos <> 0 then begin
+        I := Pos('.', St);
+        if I <> 0 then
+          Delete(St, I, 1);
+      end;
+
+      {we want a blank string if it's a zero}
+      if (StLen = 1) and (St[1] = '0') then
+        StLen := 0;
+
+      {trim leading zeroes}                   {!!.12}
+      while (StLen > 0) and (St[1] = '0') do  {!!.12}
+        Delete(St, 1, 1);                     {!!.12}
+
+      {SP will have first available space for new characters}
+      SP := MaxLen-StLen;
+
+      {pad the left side with blanks}
+      St := LeftPad(St, MaxLen);
+    end;
+
+    procedure CheckAutoAdvance;
+      {-See if we need to auto-advance to next/previous field}
+    begin
+      if not Done then
+        {advance if the string is full}
+        if (SP = MinusPos) and FlagIsSet(FR.EditFlags, AutoAdvanceEnd) then begin
+          ESC := ESnextField;
+          Done := True;
+        end;
+    end;
+
+    procedure ClearString;
+      {-Clear the input string}
+    begin
+      FillChar(St[1], MaxLen, ' ');
+      SP := MaxLen;
+      HaveMinus := False;
+    end;
+
+    function InsertChar : Boolean;
+      {-Insert Ch}
+    begin
+      InsertChar := False;
+
+      {make sure it's OK}
+      if (not CharOK(PicChar, Ch, True)) or (Ch = ' ') then
+        Exit;
+
+      {clear the string if it's the first valid char}
+      if FirstChar then begin
+        FirstChar := False;
+        if FlagIsSet(FR.EditFlags, ClearFirstCharMask) then
+          {clear the input string}
+          ClearString;
+      end;
+
+      if (Ch = '-') then begin
+        {minus sign treated as toggle}
+        if HaveMinus then
+          HaveMinus := False
+        else
+          HaveMinus := (SP > 0);
+      end
+      else if (SP > MinusPos) and InsertMode then begin
+        {don't add initial zeros}
+        if (Ch = '0') then
+          if (SP = MaxLen) then begin
+            InsertChar := True;
+            Exit;
+          end;
+
+        {decimal point is special case}
+        if (Ch = DecimalChar) then
+          if (DotPos = 0) then begin
+            {get out if decimal point not allowed or already present}
+            if (Places = 0) or (Pos('.', St) <> 0) then
+              Exit;
+
+            {translate the decimal point}
+            Ch := '.';
+
+            {if St is empty, put in a 0 before the decimal}
+            if (SP = MaxLen) then begin
+              St[SP] := '0';
+              Dec(SP);
+            end;
+          end
+          else
+            {eat the decimal point}
+            Exit;
+
+        {move everything to the left and append the char}
+        Delete(St, 1, 1);
+        Inc(StLen);
+        St[StLen] := Ch;
+        Dec(SP);
+      end
+      else if (MaxLen = 1) or not InsertMode then
+        if (Ch <> '0') and (Ch <> '.') then begin
+          {overwrite the last character}
+          St[MaxLen] := Ch;
+          if MaxLen = 1 then
+            SP := 0;
+        end;
+
+      CheckAutoAdvance;
+      InsertChar := True;
+    end;
+
+  begin
+    KeyboardFlags:= Ptr(BiosDataSele, $17); {!!.21}
+
+    {save copy of FR.EditSt^}
+    SaveEditSt := FR.EditSt^;
+
+    {adjust coordinates if desired}
+    Row := FR.eRow;
+    Col := FR.eCol;
+    FixCoordinates(ESR, Row, Col);
+
+    {store cursor shape}
+    CursorSL := CursorTypeSL;
+
+    {save NumLock state and force it on}
+    if FlagIsSet(FR.EditFlags, AutoNumLockMask) then begin
+      SaveNumLock := (KeyboardFlags^ and NumLockBit) <> 0; {!!.21}
+      KeyboardFlags^ := KeyboardFlags^ or NumLockBit; {!!.21}
+    end;
+
+    {save break checking state}
+    SaveBreak := CheckBreak;
+    CheckBreak := False;
+
+    {initialize}
+    Init;
+    ReInit;
+    PicChar := FR.Picture^[StEnd];
+
+    {set insert mode}
+    if FlagIsSet(FR.EditFlags, ForceModeMask) then begin
+      SaveInsertMode := InsertMode;
+      InsertMode := FlagIsSet(FR.EditFlags, ForceOvertypeMask);
+    end
+    else
+      InsertMode := not InsertMode;
+    ToggleInsertMode;
+
+    {clear modified flag}
+    ClearFlag(ESR.CurrentField^.XFlags, ModifiedMask);
+
+    {loop reading keys}
+    Done := False;
+    FirstChar := True;
+    FirstTime := (ESC <> ESnone);
+    repeat
+      {redraw string}
+      Redraw;
+
+      {get next command and validate it}
+
+      {$IFDEF UseMouse}
+        SaveWaitState := WaitForButtonRelease;
+        WaitForButtonRelease := True;
+      {$ENDIF}
+
+      if FirstTime then
+        FirstTime := False
+      else
+        ESC := GetCommand(EntryKeySet, EntryKeyPtr, ChWord);
+
+      {don't allow ESincChoice or ESdecChoice}
+      case ESC of
+        ESincChoice,
+        ESdecChoice :
+          if Lo(ChWord) = 0 then
+            ESC := ESnone
+          else
+            ESC := ESchar;
+      end;
+
+      {$IFDEF UseMouse}
+        WaitForButtonRelease := SaveWaitState;
+      {$ENDIF}
+
+      if ESR.ReadOnlyFlag then begin
+        if not(ESC in ReadOnlyCommands) then
+          ESC := ESnone;
+      end
+      else if not(ESC in NumberCommands) then
+        ESC := ESnone;
+
+      {allow editing of the existing string}
+      if ESC <> ESchar then
+        FirstChar := False;
+      case ESC of
+        ESnone :             {not a command}
+          if ESR.BeepOnError then
+            RingBell;
+
+        ESchar :             {A character to enter the string}
+          if CharOK(PicChar, Ch, True) then begin
+            if not InsertChar and ESR.BeepOnError then
+              RingBell;
+          end
+          else begin
+            FirstChar := False;
+            if ESR.BeepOnError then
+              RingBell;
+          end;
+
+        EStab,
+        ESwordRight,
+        ESright,
+        ESleft,
+        ESwordLeft,
+        ESbackTab,
+        ESnextField..ESdone : {various exit commands (in this context)}
+          Done := True;
+
+        ESrestore,           {Restore default and continue}
+        ESquit :             {Restore default string and quit}
+          begin
+            ReInit;
+            Done := (ESC = ESquit);
+          end;
+
+        ESdelLine :          {Delete entire line}
+          ClearString;
+
+        ESdel,               {Delete current character}
+        ESback :             {Backspace one character}
+          if (SP < MaxLen) then begin
+            {remove the last character}
+            Dec(StLen);
+            Insert(' ', St, 1);
+            Inc(SP);
+
+            {if all that's left is a 0, remove it}
+            if (SP = MaxLen-1) and (St[MaxLen] = '0') then begin
+              St[MaxLen] := ' ';
+              SP := MaxLen;
+            end;
+          end
+          else
+            {delete the minus sign, if there is one}
+            HaveMinus := False;
+
+        ESins :              {Toggle insert mode}
+          ToggleInsertMode;
+
+        EShelp :             {Invoke help system}
+          if EntryHelpPtr <> nil then
+            CallEShelp(HelpForEntry, nil, FR.HelpIndex);
+
+        {$IFDEF UseMouse}
+        ESmouse :             {new field selected by mouse}
+          if ESR.FieldCount = 1 then begin
+            ESC := ESnextField;
+            Done := True;
+          end
+          else begin
+            ESC := FindSelectedField(ESR);
+            case ESC of
+              ESmouse :
+                if (ESR.NewFieldID = ESR.CurrentID) then begin
+                  if not ESR.ReadOnlyFlag then
+                    if FlagIsSet(FR.XFlags, AllowClickExit) then begin
+                      ESC := ESclickExit;
+                      Done := True;
+                    end;
+                end
+                else
+                  Done := True;
+              ESdownField,
+              ESupField :
+                Done := True;
+            end;
+           end;
+        {$ENDIF}
+      end;
+
+      {make sure it's OK to go to next/previous field}
+      if Done then
+        Done := OKtoAdvance(ESC, FR);
+
+      {validate the entry if done}
+      if Done and (ESC <> ESquit) and not ESR.ReadOnlyFlag then begin
+        {make sure the screen is up to date}
+        Redraw;
+
+        if (FR.ValidatePtr = nil) then begin
+          SwapStrings(St, FR.EditSt^);
+          FixString(FR.EditSt^);
+          MergePicture(FR.Picture^, FR.EditSt^, FR.EditSt^, FR.EditFlags);
+        end
+        else begin
+          {swap strings for validation purposes}
+          SwapStrings(St, FR.EditSt^);
+          FixString(FR.EditSt^);
+          MergePicture(FR.Picture^, FR.EditSt^, FR.EditSt^, FR.EditFlags);
+
+          ESvalidatePtr := FR.ValidatePtr;
+          ErrorMsg := @NullErrorMsg;
+          if not ValidationRoutine(FR, ErrCode, ErrorMsg) then begin
+            {not done yet--swap back}
+            Done := False;
+            SwapStrings(St, FR.EditSt^);
+            Reinit;
+
+            if (ESR.ErrorPtr <> nil) then begin
+              {display error message from validation routine}
+              ESerrorPtr := ESR.ErrorPtr;
+              ErrorRoutine(ESR, ErrCode, ErrorMsg^);
+            end
+            else
+              {signal error with bell}
+              RingBell;
+
+            {call help prompt routine again if desired}
+            if ESR.PreEditPtr <> nil then begin
+              ESpreEditPtr := ESR.PreEditPtr;
+              HelpPromptRoutine(ESR);
+            end;
+          end;
+        end;
+      end;
+
+    until Done;
+
+    {set modified flag}
+    if ESC <> ESquit then
+      if FR.EditSt^ <> SaveEditSt then
+        SetFlag(ESR.CurrentField^.XFlags, ModifiedMask);
+
+    {restore insert mode if it was forced one way or the other}
+    if FlagIsSet(FR.EditFlags, ForceModeMask) then
+      InsertMode := SaveInsertMode;
+
+    {restore break checking status}
+    CheckBreak := SaveBreak;
+
+    {restore cursor shape}
+    SetCursorSize(Hi(CursorSL), Lo(CursorSL));
+
+    if FlagIsSet(FR.EditFlags, AutoNumLockMask) then
+      {restore previous NumLock state}
+      if SaveNumLock then
+        KeyboardFlags^ := KeyboardFlags^ or NumLockBit {!!.21}
+      else
+        KeyboardFlags^ := KeyboardFlags^ and (not NumLockBit); {!!.21}
+
+    {return the exit code}
+    NumberEditor := ESC;
+  end;
+  {$ENDIF}
+
+  function StringEditor(PosCode : Byte; var ESR : ESrecord; FR : FieldRec) : EStype;
+    {-Edit a string}
+  const
+    NumLockBit = $20;
+  var
+    Row, Col : Word;
+    PFlags : PictureFlags;
+    ChWord : Word;
+    Ch : Char absolute ChWord;
+    St : string;
+    Tmp : string; {!!.11}
+    StLen : Byte;
+    StBgn : Byte;
+    StEnd : Byte;
+    CursorSL : Word;
+    POffset : Integer;
+    Delta : Word;  {!!.08}
+    SP, I : Byte;
+    LastSP : Byte;
+    FirstChar : Boolean;
+    SaveBreak : Boolean;
+    Done : Boolean;
+    ESC : EStype absolute LastEntryCommand;
+    MaxLen : Byte;
+    SaveInsertMode : Boolean;
+    CharOrBool : Boolean;
+    DotPos : Byte;
+    ErrCode : Byte;
+    MaxChars : Byte;
+    KeyboardFlags : ^Word {absolute $40 : $17}; {!!.21}
+    SaveNumLock : Boolean;
+    ErrorMsg : StringPtr;
+    IsNumber : Boolean;
+    DefPic : Char;
+    IsNested : Boolean;
+    FirstTime : Boolean;
+    {$IFDEF UseMouse}
+    SaveWaitState : Boolean;
+    {$ENDIF}
+
+    procedure CalcBeginEnd;
+      {-Calculate values for StBgn/StEnd}
+    var
+      {Delta,} I, J : Word;  {!!.08}
+    begin
+      IsNumber := DotPos <> 0;
+      Delta := 0;
+      for I := 1 to MaxLen do
+        case FR.Picture^[I] of
+          FloatDollar :
+            begin
+              PFlags[I] := True;
+              IsNumber := True;
+              Inc(Delta);
+            end;
+          Comma :
+            begin
+              PFlags[I] := True;
+              IsNumber := True;
+              Inc(Delta);
+            end;
+          else
+            DefPic := FR.Picture^[I];
+        end;
+      StBgn := 0;
+      StEnd := 0;
+      MaxChars := 0;
+      for I := 1 to MaxLen do
+        if PFlags[I] then begin
+          Inc(MaxChars);
+          if StBgn = 0 then
+            StBgn := I;
+          StEnd := I;
+        end;
+      Inc(StBgn, Delta);
+      Dec(MaxChars, Delta);
+    end;
+
+    procedure CheckAutoAdvance;
+      {-See if we need to auto-advance to next/previous field}
+    begin
+      if not Done then
+        if (SP < StBgn) and FlagIsSet(FR.EditFlags, AutoAdvanceBgn) then begin
+          if (ESC <> ESleft) and (ESC <> ESwordLeft) then
+            ESC := ESprevField;
+          Done := True;
+        end
+        else if (SP > StEnd) and FlagIsSet(FR.EditFlags, AutoAdvanceEnd) then begin
+          if (ESC <> ESright) and (ESC <> ESwordRight) then
+            ESC := ESnextField;
+          Done := True;
+        end;
+    end;
+
+    procedure CalcStLen;
+      {-Calculate length of St}
+    var
+      I : Word;
+    begin
+      I := StEnd;
+      while ((St[I] = ' ') or not PFlags[I]) and (I <> 0) do
+        Dec(I);
+      StLen := I;
+    end;
+
+    procedure HomeCommand;
+      {-Move the cursor to the start of the line}
+    begin
+      POffset := 0;
+      SP := StBgn;
+    end;
+
+    procedure EndCommand;
+      {-Move the cursor to the end of the line}
+    begin
+      SP := Succ(StLen);
+      if SP > StEnd then
+        SP := StEnd;
+      while (not PFlags[SP]) and (SP < StEnd) do
+        Inc(SP);
+    end;
+
+    procedure RePad;
+      {-Pad to the end of the string with blanks}
+    var
+      I : Word;
+    begin
+      for I := SP to StEnd do
+        if PFlags[I] then
+          St[I] := ' ';
+      CalcStLen;
+    end;
+
+    procedure ClearString;
+      {-Clear the string being edited}
+    begin
+      HomeCommand;
+      RePad;
+    end;
+
+    procedure AdvanceCursor;
+      {-Advance cursor one position}
+    begin
+      Inc(SP);
+      if SP < StEnd then
+        while not PFlags[SP] do
+          Inc(SP);
+    end;
+
+    function StartOfSubField : Byte;
+      {-Find the start of the current subfield}
+    var
+      I : Word;
+    begin
+      I := SP;
+      while (I > StBgn) and PFlags[I-1] do {!! was 1 !!}
+        Dec(I);
+      StartOfSubField := I;
+    end;
+
+    function EndOfSubField : Byte;
+      {-Find the end of the current subfield}
+    var
+      I : Word;
+    begin
+      I := SP;
+      while (I < MaxLen) and PFlags[I+1] do
+        Inc(I);
+      EndOfSubField := I;
+    end;
+
+    procedure InsertChar;
+      {-Insert Ch at St[SP]}
+    begin
+      if not FlagIsSet(FR.EditFlags, InsertPushesMask) then
+        if St[EndOfSubField] <> ' ' then
+          Exit;
+      if PFlags[SP+1] then begin
+        Delete(St, EndOfSubField, 1);
+        Insert(Ch, St, SP);
+      end
+      else
+        St[SP] := Ch;
+      CalcStLen;
+      AdvanceCursor;
+    end;
+
+    procedure DeleteChar;
+      {-Delete char at St[SP]}
+    begin
+      if CharOrBool then
+        Exit;
+      Delete(St, SP, 1);
+      Insert(' ', St, EndOfSubField);
+      CalcStLen;
+    end;
+
+    procedure DeleteWord;
+      {-Delete the word to the right of the cursor}
+    var
+      I, J : Word;
+    begin
+      if CharOrBool then
+        Exit;
+      {delete all of the current word, if any}
+      J := EndOfSubField;
+      while St[SP] <> ' ' do begin
+        Delete(St, SP, 1);
+        Insert(' ', St, J);
+      end;
+
+      {delete any spaces prior to the next word, if any}
+      I := SP;
+      while (I <= J) and (St[I] = ' ') do
+        Inc(I);
+      if I < J then
+        while St[SP] = ' ' do begin
+          Delete(St, SP, 1);
+          Insert(' ', St, J);
+        end;
+
+      CalcStLen;
+    end;
+
+    procedure WordRight;
+      {-Cursor right one word}
+    var
+      I : Word;
+    begin
+      if (SP < StLen) then begin
+        Inc(SP);
+        I := EndOfSubField;
+        while (SP <= I) and (St[SP] <> ' ') do
+          Inc(SP);
+        while (SP <= I) and (St[SP] = ' ') do
+          Inc(SP);
+        if SP < StEnd then begin
+          while not PFlags[SP] do
+            Inc(SP);
+        end
+        else
+          SP := StLen+1;
+      end
+      else begin
+        SP := Succ(EndOfSubField);
+        if (SP > StEnd) then begin
+          if FlagIsSet(FR.EditFlags, AutoAdvanceEnd) and not
+             FlagIsSet(FR.XFlags, ProhibitNextField) then
+               CheckAutoAdvance;
+        end
+        else
+          while not PFlags[SP] do
+            Inc(SP);
+      end;
+    end;
+
+    procedure WordLeft;
+      {-Cursor left one word}
+    var
+      I : Word;
+    begin
+      if (SP > StBgn) then begin
+        Dec(SP);
+        if not PFlags[SP] then
+          while not PFlags[SP] do
+            Dec(SP);
+        I := StartOfSubField;
+        while (SP >= I) and ((SP > StLen) or (St[SP] = ' ')) do
+          Dec(SP);
+        while (SP >= I) and (St[SP] <> ' ') do
+          Dec(SP);
+        Inc(SP);
+      end
+      else if FlagIsSet(FR.EditFlags, AutoAdvanceBgn) then begin
+        SP := 0;
+        CheckAutoAdvance;
+      end;
+    end;
+
+    procedure DeleteToEnd;
+      {-Delete from cursor to end of subfield}
+    var
+      I : Word;
+    begin
+      if CharOrBool then
+        Exit;
+      I := EndOfSubField;
+      if SP = I then
+        Exit;
+      Delete(St, SP, Succ(I-SP));
+      Insert(CharStr(' ', Succ(I-SP)), St, SP);
+      CalcStLen;
+    end;
+
+    procedure DeleteToBegin;
+      {-Delete from beginning of subfield to the cursor}
+    var
+      I, J : Word;
+    begin
+      if CharOrBool then
+        Exit;
+      I := StartOfSubField;
+      if SP = I then
+        Exit;
+      J := EndOfSubField;
+      Delete(St, I, SP-I);
+      Insert(CharStr(' ', SP-I), St, J-Pred(SP-I));
+      SP := I;
+      CalcStLen;
+    end;
+
+    procedure DoTab;
+      {-Move cursor to start of next subfield}
+    var
+      I : Word;
+    begin
+      I := EndOfSubField;
+      if I = StEnd then begin
+        SP := I;
+        Done := OKtoAdvance(EStab, FR);
+      end
+      else begin
+        SP := I+1;
+        while not PFlags[SP] do
+          Inc(SP);
+      end;
+    end;
+
+    procedure DoBackTab;
+      {-Move cursor to start of previous subfield}
+    var
+      I : Word;
+    begin
+      I := StartOfSubField;
+      if I = StBgn then begin
+        SP := I;
+        Done := True;
+      end
+      else begin
+        SP := I-1;
+        while not PFlags[SP] do
+          Dec(SP);
+        SP := StartOfSubField;
+      end;
+    end;
+
+    procedure FixPOffset;
+      {-Adjust SP and POffset if necessary}
+    begin
+      if (SP > StEnd) then
+        SP := StEnd
+      else if (SP < StBgn) then
+        SP := StBgn;
+      if (SP > FR.EditLen+POffset) then
+        POffset := Integer(SP)-FR.EditLen
+      else if (SP < Succ(POffset)) then
+        POffset := Integer(SP)-1;
+      if POffset < 0 then
+        POffset := 0;
+    end;
+
+    procedure Redraw(MoveCursor : Boolean);
+      {-Position cursor and redraw string}
+    begin
+      with FR do begin
+        FixPOffset;
+        DrawEditString(St, Row, Col, EditLen, POffset, StringAttr, CtrlAttr,
+          PadChar, EditFlags, Picture^, PFlags);
+        if MoveCursor then
+          GoToXYAbs(Col+Pred(SP)-POffset, Row);
+      end;
+    end;
+
+    procedure FixNumber(FirstHalf, SecondHalf : Boolean);
+      {-Fix the first and/or second half of a numeric field}
+    var
+      I, J, K : Word;
+      SaveSP : Byte;
+    begin
+      Ch := ' ';
+      SaveSP := SP;
+      if FirstHalf then begin
+        {bring numbers to left of decimal flush right}
+        if DotPos = 0 then
+          SP := StEnd
+        else
+          SP := DotPos-1;
+        K := EndOfSubField;
+        J := StartOfSubField-Delta; {!!.08}
+        I := J;
+        while St[I] = ' ' do
+          Inc(I);
+        while I <= K do begin
+          if St[I] = ' ' then begin
+            Delete(St, I, 1);
+            Insert(' ', St, J);
+          end;
+          Inc(I);
+        end;
+
+        {make sure it isn't all blanks to left of decimal}
+        if St[K] = ' ' then
+          St[K] := '0';
+      end;
+
+      if (DotPos <> 0) and SecondHalf then begin
+        SP := DotPos+1;
+        {bring numbers to right of decimal flush left}
+        J := EndOfSubField;
+        if SP <= J then begin   {!!.12}
+          K := J;               {!!.12}
+          J := StartOfSubField;
+          I := K;
+          while St[I] = ' ' do begin
+            St[I] := '0';
+            Dec(I);
+          end;
+          while I >= J do begin
+            if St[I] = ' ' then begin
+              Delete(St, I, 1);
+              Insert('0', St, K);
+            end;
+            Dec(I);
+          end;
+        end;
+      end;
+
+      SP := SaveSP;
+      CalcStLen;
+    end;
+
+    procedure CheckFirstChar;
+      {-Check first char flag}
+    begin
+      if FirstChar then begin
+        FirstChar := False;
+        if FlagIsSet(FR.EditFlags, ClearFirstCharMask) then
+          {clear the input string}
+          ClearString;
+      end;
+    end;
+
+    procedure ReloadEditSt;
+      {-Reload the original string}
+    var
+      I : Word;
+      Ch : Char;
+    begin
+      St := FR.EditSt^;
+      if IsNumber then begin
+        if Pos(FloatDollar, FR.Picture^) <> 0 then begin
+          I := Pos(CurrencyLtStr, St);
+          if (I <> 0) and PFlags[I] then
+            FillChar(St[I], Length(CurrencyLtStr), ' ');
+        end;
+        for I := 1 to Length(St) do
+          if (St[I] = CommaChar) then
+            St[I] := ' ';
+        FixNumber(True, True);
+      end
+      else
+        CalcStLen;
+    end;
+
+    function CharIsOK : Boolean;
+      {-Return true if Ch can be added to the string}
+    var
+      PicChar : Char;
+    begin
+      PicChar := FR.Picture^[SP];
+      case PicChar of
+        Comma,
+        FloatDollar : PicChar := DefPic;
+      end;
+      CharIsOK := CharOK(PicChar, Ch, True);
+    end;
+
+  begin
+    KeyboardFlags:= Ptr(BiosDataSele, $17); {!!.21}
+
+    {adjust coordinates if desired}
+    Row := FR.eRow;
+    Col := FR.eCol;
+    FixCoordinates(ESR, Row, Col);
+
+    {get maximum length of string}
+    MaxLen := Length(FR.Picture^);
+
+    {get position of decimal point, if any}
+    DotPos := Pos(DecimalPt, FR.Picture^);
+
+    {store cursor shape}
+    CursorSL := CursorTypeSL;
+
+    {save NumLock state and force it on}
+    if FlagIsSet(FR.EditFlags, AutoNumLockMask) then begin
+      SaveNumLock := FlagIsSet(KeyboardFlags^, NumLockBit); {!!.21}
+      SetFlag(KeyboardFlags^, NumLockBit);  {!!.21}
+    end;
+
+    {save break checking state}
+    SaveBreak := CheckBreak;
+    CheckBreak := False;
+
+    {initialize}
+    POffset := 0;
+    InitPictureFlags(FR.Picture^, PFlags);
+    IsNested := FlagIsSet(FR.EditFlags, NestedMask);
+    CharOrBool := FlagIsSet(FR.XFlags, CharFieldMask+BooleanFieldMask);
+
+    {get the default string and calculate begin/end of line}
+    CalcBeginEnd;
+    ReloadEditSt;
+    Tmp := St; {!!.11}
+
+    {position the cursor}
+    case PosCode of
+      0 :                    {normal}
+        if FlagIsSet(FR.EditFlags, CursorToEndMask) then
+          EndCommand
+        else
+          HomeCommand;
+      1 :                    {force end of string}
+        if StEnd > FR.EditLen then begin {!!.08}
+          SP := FR.EditLen;              {!!.08}
+          if not PFlags[SP] then         {!!.08}
+            if SP < StBgn then           {!!.08}
+              SP := StBgn                {!!.08}
+            else while not PFlags[SP] do {!!.08}
+              Inc(SP);                   {!!.08}
+        end                              {!!.08}
+        else                             {!!.08}
+          SP := StEnd;
+      2 :                    {force start of last subfield}
+        begin
+          SP := StEnd;
+          SP := StartOfSubfield;
+        end;
+      3 :
+        begin
+          SP := StEnd;
+          if MaxChars > 1 then
+            WordLeft;
+        end;
+    end;
+    LastSP := SP;
+
+    {set insert mode}
+    if FlagIsSet(FR.EditFlags, ForceModeMask) then begin
+      SaveInsertMode := InsertMode;
+      InsertMode := FlagIsSet(FR.EditFlags, ForceOvertypeMask);
+    end
+    else
+      InsertMode := not InsertMode;
+    ToggleInsertMode;
+
+    {clear modified flag}
+    ClearFlag(ESR.CurrentField^.XFlags, ModifiedMask);
+
+    {loop reading keys}
+    Done := False;
+    FirstChar := True;
+    FirstTime := (ESC <> ESnone);
+    repeat
+      if DotPos <> 0 then begin
+        {see if we need to fix a number}
+        if (LastSP < DotPos) and (SP > DotPos) then
+          FixNumber(True, False)
+        else if (LastSP > DotPos) and (SP < DotPos) then
+          FixNumber(False, True);
+      end;
+
+      {position cursor and redraw string}
+      LastSP := SP;
+      Redraw(True);
+
+      {get next command and validate it}
+
+      {$IFDEF UseMouse}
+        SaveWaitState := WaitForButtonRelease;
+        WaitForButtonRelease := True;
+      {$ENDIF}
+
+      if FirstTime then
+        FirstTime := False
+      else
+        ESC := GetCommand(EntryKeySet, EntryKeyPtr, ChWord);
+
+      {don't allow ESincChoice or ESdecChoice}
+      case ESC of
+        ESincChoice,
+        ESdecChoice :
+          if Lo(ChWord) = 0 then
+            ESC := ESnone
+          else
+            ESC := ESchar;
+      end;
+
+      {$IFDEF UseMouse}
+        WaitForButtonRelease := SaveWaitState;
+      {$ENDIF}
+
+      if ESR.ReadOnlyFlag or IsNested then begin
+        if not(ESC in ReadOnlyCommands) then
+          ESC := ESnone;
+      end
+      else if not(ESC in StringCommands) then
+        ESC := ESnone;
+
+      {deal with control characters if desired}
+      if ESC = ESctrlChar then
+        {don't allow control characters if attributes are the same}
+        if (FR.CtrlAttr = FR.StringAttr) then
+          ESC := ESnone
+        else begin
+          BlockCursor;
+          ChWord := CallESgetKey;
+          ESC := ESchar;
+          if InsertMode then
+            FatCursor
+          else
+            NormalCursor;
+        end;
+
+      {allow editing of the existing string}
+      if ESC <> ESchar then
+        FirstChar := False;
+      case ESC of
+        ESnone :             {not a command}
+          if ESR.BeepOnError then
+            RingBell;
+
+        ESchar :             {A character to enter the string}
+          if (DotPos <> 0) and (Ch = DecimalChar) then begin
+            CheckFirstChar;
+            FixNumber(True, False);
+            SP := DotPos+1;
+          end
+          else if CharIsOK then begin
+            CheckFirstChar;
+            if CharOrBool or not InsertMode then begin
+              {overtype mode}
+              if SP <= StEnd then begin
+                St[SP] := Ch;
+                if SP > StLen then
+                  StLen := SP;
+                AdvanceCursor;
+              end;
+            end
+            else
+              {insert mode}
+              InsertChar;
+            CheckAutoAdvance;
+          end
+          else begin
+            FirstChar := False;
+            if ESR.BeepOnError then
+              RingBell;
+          end;
+
+        EStab :
+          DoTab;
+
+        ESbackTab :
+          DoBackTab;
+
+        ESnextField :        {check for nested form flag}
+          begin
+            if IsNested then
+              ESC := ESnested;
+            Done := True;
+          end;
+
+        ESprevField..ESdone : {various exit commands}
+          Done := True;
+
+        ESrestore,           {Restore default and continue}
+        ESquit :             {Restore default string and quit}
+          begin
+            ReloadEditSt;
+            if FlagIsSet(FR.EditFlags, CursorToEndMask) then
+              EndCommand
+            else
+              HomeCommand;
+            Done := (ESC = ESquit);
+          end;
+
+        EShome :             {Cursor to begin of line}
+          HomeCommand;
+
+        ESend :              {Cursor to end of line}
+          EndCommand;
+
+        ESdelEol :           {Delete from cursor to end of line}
+          DeleteToEnd;
+
+        ESdelBol :           {Delete from beginning of subfield to the cursor}
+          DeleteToBegin;
+
+        ESdelLine :          {Delete entire line}
+          if not CharOrBool then
+            ClearString;
+
+        ESleft :             {Cursor left by one character}
+          begin
+            if SP > StBgn then begin
+              Dec(SP);
+              while not PFlags[SP] do
+                Dec(SP);
+            end
+            else if FlagIsSet(FR.EditFlags, AutoAdvanceBgn) then
+              SP := Pred(StBgn);
+            CheckAutoAdvance;
+          end;
+
+        ESright :            {Cursor right by one character}
+          begin
+            if (SP < StEnd) or (FlagIsSet(FR.EditFlags, AutoAdvanceEnd) and not
+             FlagIsSet(FR.XFlags, ProhibitNextField)) then
+              AdvanceCursor;
+            CheckAutoAdvance;
+          end;
+
+        ESwordLeft :         {Cursor left one word}
+          WordLeft;
+
+        ESwordRight :        {Cursor right one word}
+          WordRight;
+
+        ESdel :              {Delete current character}
+          if SP <= StLen then
+            DeleteChar;
+
+        ESback :             {Backspace one character}
+          if (SP > StBgn) then begin
+            Dec(SP);
+            while not PFlags[SP] do
+              Dec(SP);
+            DeleteChar;
+            if POffset > 0 then
+              {String horizontally scrolled}
+              if POffset+FR.EditLen >= StLen then
+                {The rightmost portion of the string is displayed, so scroll}
+                Dec(POffset);
+          end;
+
+        ESdelWord :          {Delete word to right of cursor}
+          if SP <= StLen then
+            DeleteWord;
+
+        ESins :              {Toggle insert mode}
+          if not FlagIsSet(FR.EditFlags, ForceModeMask) then
+            ToggleInsertMode;
+
+        EShelp :             {Invoke help system}
+          if EntryHelpPtr <> nil then
+            CallEShelp(HelpForEntry, nil, FR.HelpIndex);
+
+        {$IFDEF UseMouse}
+        ESmouse :             {new field selected by mouse}
+          if ESR.FieldCount = 1 then begin
+            ESC := ESnextField;
+            Done := True;
+          end
+          else begin
+            ESC := FindSelectedField(ESR);
+            case ESC of
+              ESmouse :
+                if (ESR.NewFieldID = ESR.CurrentID) then begin
+                  if FlagIsSet(FR.EditFlags, NestedMask) then
+                    Done := True
+                  else if not ESR.ReadOnlyFlag then
+                    if FlagIsSet(FR.XFlags, AllowClickExit) then begin
+                      ESC := ESclickExit;
+                      Done := True;
+                    end;
+                end
+                else
+                  Done := True;
+              ESdownField,
+              ESupField :
+                Done := True;
+            end;
+           end;
+        {$ENDIF}
+      end;
+
+      {make sure it's OK to go to next/previous field}
+      if Done then
+        Done := OKtoAdvance(ESC, FR);
+
+      {validate the entry if done}
+      if Done and (ESC <> ESquit) and not ESR.ReadOnlyFlag then begin
+        {special handling of numbers}
+        if IsNumber then
+          FixNumber(True, True);
+
+        {make sure the screen is up to date}
+        Redraw(False);
+
+        I := ValidField(FR.Picture^, St);
+        if (I = 0) and (FR.ValidatePtr = nil) then
+          SwapStrings(St, FR.EditSt^)
+        else begin
+          {swap strings for validation purposes}
+          SwapStrings(St, FR.EditSt^);
+
+          ESvalidatePtr := FR.ValidatePtr;
+          ErrorMsg := @NullErrorMsg;
+          if (I <> 0) or not ValidationRoutine(FR, ErrCode, ErrorMsg) then begin
+            {not done yet--swap back}
+            Done := False;
+            FirstChar := FlagIsSet(FR.EditFlags, ClearFirstCharMask); {!!.12}
+            SwapStrings(St, FR.EditSt^);
+            if I <> 0 then begin
+              SP := I;
+              ErrCode :=  BadCharError;
+              ErrorMsg := @BadCharMsg;
+            end
+            else
+              SP := LastSP;
+
+            if (ESR.ErrorPtr <> nil) then begin
+              {display error message from validation routine}
+              ESerrorPtr := ESR.ErrorPtr;
+              ErrorRoutine(ESR, ErrCode, ErrorMsg^);
+            end
+            else
+              {signal error with bell}
+              RingBell;
+
+            {call help prompt routine again if desired}
+            if ESR.PreEditPtr <> nil then begin
+              ESpreEditPtr := ESR.PreEditPtr;
+              HelpPromptRoutine(ESR);
+              if FirstChar then                            {!!.12}
+                HomeCommand;                               {!!.12}
+            end;
+          end;
+        end;
+      end;
+
+    until Done;
+
+    {set modified flag}
+    if ESC <> ESquit then
+      if FR.EditSt^ <> Tmp then                              {!!.11}
+        SetFlag(ESR.CurrentField^.XFlags, ModifiedMask);
+
+    {restore insert mode if it was forced one way or the other}
+    if FlagIsSet(FR.EditFlags, ForceModeMask) then
+      InsertMode := SaveInsertMode;
+
+    {restore break checking status}
+    CheckBreak := SaveBreak;
+
+    {restore cursor shape}
+    SetCursorSize(Hi(CursorSL), Lo(CursorSL));
+
+    if FlagIsSet(FR.EditFlags, AutoNumLockMask) then
+      {restore previous NumLock state}
+      if SaveNumLock then
+        SetFlag(KeyboardFlags^, NumLockBit) {!!.21}
+      else
+        ClearFlag(KeyboardFlags^, NumLockBit); {!!.21}
+
+    {return the exit code}
+    StringEditor := ESC;
+  end;
+
+

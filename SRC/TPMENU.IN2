@@ -1,0 +1,645 @@
+  {Declarations and code for menu libraries on disk}
+
+const
+  IdStringLen = 12;          {Length of individual menu names in a menu library}
+  MaxMenusInLib = 10;        {Maximum number of menus in a library}
+  MaxLibId = 2;              {Two versions of library so far}
+
+  LibId : array[1..MaxLibId] of string[IdStringLen] = {ID at beginning of library}
+  ('TPROMENULIB1', 'TPROMENULIB2');
+  ObsoleteId : string[1] = #255; {ID for obsolete menu in library}
+
+type
+  LibHeaderRec =
+    record
+      IdString : string[IdStringLen]; {Name of particular menu}
+      StartPos : LongInt;    {Position in file of menu}
+    end;
+
+  LibHeaderArray = array[1..MaxMenusInLib] of LibHeaderRec;
+
+  LibHeader =
+    record
+      HeaderId : string[IdStringLen];
+      Index : LibHeaderArray;
+    end;
+
+  FileElement =
+  (Fskeys,                   {Selection keys}
+    Fsubmenu,                {Submenu record}
+    Fitem,                   {Item record}
+    Fpop,                    {Pop to prior level}
+    Fend,                    {End of menu}
+    Fdraw                    {Draw mode record}
+    );
+
+  {Fields in FsubMenuRec must match those at beginning of SubMenuRec}
+  FsubMenuRec =
+    record
+      XL, YL : Byte;
+      XH, YH : Byte;
+      YHelp : Byte;
+      Orient : Orientation;
+      Frame : FrameArray;
+      Colors : MenuColorArray;
+    end;
+
+  {Fields in FdrawRec must match those at beginning of WinDrawRec}
+  FdrawRec =
+    record
+      Framed : Boolean;      {True to draw frame around window}
+      Exploding : Boolean;   {True if window displays and erases in stages}
+      Shadowed : Boolean;    {True to draw shadow around window}
+      Noisy : Boolean;       {True to make noise while exploding}
+      ExploDelay : Word;     {Milliseconds per stage of explosion}
+    end;
+
+  {Fields in FitemRec must match those at beginning of ItemRec}
+  FitemRec =
+    record
+      DisplayPos : Byte;
+      SelectPos : Byte;
+      Key : MenuKey;
+    end;
+
+var
+  FsubMenuRecSize : Word;
+
+  function CharSet2Str(ChS : MenuCharSet) : string;
+    {-Convert a MenuCharSet into a String}
+  var
+    Ch : Char;
+    S : string;
+  begin
+    S := '';
+    for Ch := #0 to #255 do
+      if Ch in ChS then
+        S := S+Ch;
+    CharSet2Str := S;
+  end;
+
+  procedure Str2CharSet(S : string; var ChS : MenuCharSet);
+    {-Convert a String into a MenuCharSet}
+  var
+    I : Word;
+  begin
+    ChS := [];
+    for I := 1 to Length(S) do
+      ChS := ChS+[S[I]];
+  end;
+
+  function ExistFile(Fname : string) : Boolean;
+    {-Return true if file is found}
+  var
+    F : file;
+  begin
+    Assign(F, Fname);
+    Reset(F, 1);
+    if IoResult = 0 then begin
+      ExistFile := True;
+      Close(F);
+    end else
+      ExistFile := False;
+  end;
+
+  procedure ReadString(var F : file; var S : string);
+    {-Read a string from an untyped file}
+  var
+    Len : Byte;
+    BytesRead : Word;
+  begin
+    if PrevMenuStatus <> MenuSuccess then
+      Exit;
+    BlockRead(F, Len, 1, BytesRead);
+    if BytesRead <> 1 then begin
+      PrevMenuStatus := MenuFileReadError;
+      Exit;
+    end;
+    S[0] := Chr(Len);
+    BlockRead(F, S[1], Len, BytesRead);
+    if BytesRead <> Len then
+      PrevMenuStatus := MenuFileReadError;
+  end;
+
+  procedure WriteString(var F : file; S : string);
+    {-Write a string to an untyped file}
+  var
+    BytesWritten : Word;
+  begin
+    if PrevMenuStatus <> MenuSuccess then
+      Exit;
+    BlockWrite(F, S, Succ(Length(S)), BytesWritten);
+    if BytesWritten <> Succ(Length(S)) then
+      PrevMenuStatus := MenuFileWriteError;
+  end;
+
+  procedure ReadStruct(var F : file; var Buffer; Bytes : Word);
+    {-Read a fixed size structure from the library file}
+  var
+    BytesRead : Word;
+  begin
+    if PrevMenuStatus <> MenuSuccess then
+      Exit;
+    BlockRead(F, Buffer, Bytes, BytesRead);
+    if BytesRead <> Bytes then
+      PrevMenuStatus := MenuFileReadError;
+  end;
+
+  procedure WriteStruct(var F : file; var Buffer; Bytes : Word);
+    {-Write a fixed size structure to the library file}
+  var
+    BytesWritten : Word;
+  begin
+    if PrevMenuStatus <> MenuSuccess then
+      Exit;
+    BlockWrite(F, Buffer, Bytes, BytesWritten);
+    if BytesWritten <> Bytes then
+      PrevMenuStatus := MenuFileWriteError;
+  end;
+
+  function FindId(var Header : LibHeader; ID : string) : Integer;
+    {-Search a header for the ID string, returning 0 or entry number}
+  var
+    S : string[IdStringLen];
+    I : Integer;
+  begin
+    S := StUpcase(Copy(ID, 1, IdStringLen));
+    for I := 1 to MaxMenusInLib do
+      if S = Header.Index[I].IdString then begin
+        FindId := I;
+        Exit;
+      end;
+    FindId := 0;
+  end;
+
+  procedure OpenLibrary(var F : file; {Opened file variable}
+                        Fname : string; {Library file name to open}
+                        ID : string; {Menu identifier string}
+                        Create : Boolean; {True to create a new file}
+                        var StPos : LongInt {File start position for menu}
+                        );
+    {-Open or create a library file}
+  var
+    Header : LibHeader;
+    Entry : Integer;
+    Format : Integer;
+    HighestLibId : Integer;
+    Matches : Boolean;
+  begin
+    if PrevMenuStatus <> MenuSuccess then
+      Exit;
+
+    if ExistFile(Fname) then begin
+
+      {Open existing file}
+      Assign(F, Fname);
+      Reset(F, 1);
+      if IoResult <> 0 then begin
+        PrevMenuStatus := MenuFileNotFound;
+        Exit;
+      end;
+
+      {Read the current header}
+      ReadStruct(F, Header, SizeOf(LibHeader));
+      if PrevMenuStatus <> MenuSuccess then
+        Exit;
+
+      {See if a library file}
+      {$IFDEF Tpro5Menu}
+      HighestLibId := MaxLibId;
+      {$ELSE}
+      HighestLibId := 1;
+      {$ENDIF}
+      Matches := False;
+      for Format := 1 to HighestLibId do
+        if Header.HeaderId = LibId[Format] then begin
+          Matches := True;
+          case Format of
+            1 : FsubMenuRecSize := SizeOf(FsubMenuRec)-SizeOf(MenuColorArray)+6;
+            2 : FsubMenuRecSize := SizeOf(FsubMenuRec);
+          end;
+        end;
+      if not Matches then begin
+        PrevMenuStatus := MenuNotLibraryFile;
+        Exit;
+      end;
+
+      {See if menu already in library}
+      Entry := FindId(Header, ID);
+
+      if Create then begin
+        if Entry <> 0 then
+          {Obsolete the existing entry}
+          Header.Index[Entry].IdString := ObsoleteId;
+
+        {Find first available entry}
+        Entry := FindId(Header, '');
+        if Entry = 0 then begin
+          {All entries are filled}
+          PrevMenuStatus := MenuLibraryFull;
+          Exit;
+        end;
+
+        {Prepare to write a new header}
+        StPos := FileSize(F);
+        Reset(F, 1);
+
+      end else if Entry = 0 then begin
+        {Entry not in library}
+        PrevMenuStatus := MenuIdNotFound;
+        Exit;
+
+      end else begin
+        {Entry in library for read}
+        StPos := Header.Index[Entry].StartPos;
+        Exit;
+      end;
+
+    end else if Create then begin
+
+      {Create a new library file}
+      Assign(F, Fname);
+      Rewrite(F, 1);
+      if IoResult <> 0 then begin
+        PrevMenuStatus := MenuFileCreationError;
+        Exit;
+      end;
+
+      {Initialize the header}
+      with Header do begin
+        FsubMenuRecSize := SizeOf(FsubMenuRec);
+        if SizeOf(MenuColorArray) = 6 then
+          Format := 1
+        else
+          Format := 2;
+        HeaderId := LibId[Format];
+        FillChar(Index, SizeOf(LibHeaderArray), 0);
+      end;
+
+      Entry := 1;
+      StPos := SizeOf(LibHeader);
+
+    end else begin
+      {File not found}
+      PrevMenuStatus := MenuFileNotFound;
+      Exit;
+    end;
+
+    {Update the header}
+    with Header.Index[Entry] do begin
+      IdString := StUpcase(Copy(ID, 1, IdStringLen));
+      StartPos := StPos;
+    end;
+    WriteStruct(F, Header, SizeOf(LibHeader));
+  end;
+
+  procedure WriteElement(var F : file; Element : FileElement; var Buffer);
+    {-Write a file element to a menu file}
+  var
+    SKS : MenuCharSet absolute Buffer;
+  begin
+    {Write the identifier}
+    WriteStruct(F, Element, 1);
+    case Element of
+      Fskeys :               {Selection keys}
+        WriteString(F, CharSet2Str(SKS));
+      Fsubmenu :             {Submenu record}
+        WriteStruct(F, Buffer, FsubMenuRecSize);
+      Fdraw :
+        WriteStruct(F, Buffer, SizeOf(FdrawRec));
+      Fitem :                {Item record}
+        WriteStruct(F, Buffer, SizeOf(FitemRec));
+    end;
+  end;
+
+  procedure WriteSubMenu(var F : file; SubMnu : SubMenuP);
+    {-Write a submenu and its children to file}
+  var
+    Item : ItemP;
+    Junk : Byte;
+  begin
+    {Write FsubMenuRec to file}
+    WriteElement(F, Fsubmenu, SubMnu^);
+
+    with SubMnu^ do begin
+
+      {Write header string}
+      WriteString(F, StringFromHeap(Header));
+
+      {$IFDEF Tpro5Menu}
+      {Write FdrawRec to file}
+      WriteElement(F, Fdraw, Draw);
+      {$ENDIF}
+
+      {Scan the items}
+      Item := Items.First;
+      while Item <> nil do begin
+        {Write FitemRec to file}
+        WriteElement(F, Fitem, Item^);
+        with Item^ do begin
+          {Write name string}
+          WriteString(F, StringFromHeap(Name));
+          {Write help string}
+          WriteString(F, StringFromHeap(Help));
+          {Write submenu, if any}
+          if Sub <> nil then
+            WriteSubMenu(F, Sub);
+        end;
+        Item := Item^.Next;
+      end;
+    end;
+
+    {Write pop element to exit this level of submenu}
+    WriteElement(F, Fpop, Junk);
+  end;
+
+  procedure WriteMenuLib(Mnu : Menu; Fname : string; ID : string);
+    {-Write a menu system to a binary menu library}
+  var
+    F : file;
+    StartPos : LongInt;
+    Junk : Word;
+  begin
+    {Open or create the library file}
+    OpenLibrary(F, Fname, ID, True, StartPos);
+
+    if PrevMenuStatus = MenuSuccess then begin
+      {Position the file pointer to add the new element}
+      Seek(F, StartPos);
+
+      {Write selection keys for the menu}
+      WriteElement(F, Fskeys, Mnu^.SelectKeys);
+
+      {Write the submenus}
+      WriteSubMenu(F, Mnu^.Root);
+
+      {Write the end marker}
+      WriteElement(F, Fend, Junk);
+    end;
+
+    Close(F);
+    {Clear ioresult}
+    Junk := IoResult;
+  end;
+
+  function ReadMenuLib(Fname : string;
+                       ID : string;
+                       UserFunc : Pointer) : Menu;
+    {-Read a menu system from a binary menu library}
+  var
+    P : Menu;
+    F : file;
+    StartPos : LongInt;
+    Junk : Word;
+    FE : FileElement;
+    S : string;
+    H : string;
+    ChS : MenuCharSet;
+    FMR : FsubMenuRec;
+    FDM : FdrawRec;
+    IR : FitemRec;
+  begin
+    {Open the library and find the menu entry}
+    OpenLibrary(F, Fname, ID, False, StartPos);
+
+    P := nil;
+
+    if PrevMenuStatus = MenuSuccess then begin
+
+      {Position the file to read the new element}
+      Seek(F, StartPos);
+
+      repeat
+
+        {Read the record type}
+        ReadStruct(F, FE, 1);
+
+        case FE of
+
+          Fskeys :           {Selection keys}
+            if P <> nil then
+              PrevMenuStatus := MenuFileCorrupt
+            else begin
+              {Read the SelectKeys string}
+              ReadString(F, S);
+              {Convert to a set}
+              Str2CharSet(S, ChS);
+              {Initialize the menu}
+              P := NewMenu(ChS, UserFunc);
+            end;
+
+          Fsubmenu :         {Submenu record}
+            if P = nil then
+              PrevMenuStatus := MenuFileCorrupt
+            else begin
+              {Read the submenu record}
+              ReadStruct(F, FMR, FsubMenuRecSize);
+              {Read the header string}
+              ReadString(F, S);
+              {Add the submenu}
+              with FMR do begin
+                {$IFDEF Tpro5Menu}
+                if FsubMenuRecSize < SizeOf(FsubMenuRec) then begin
+                  {Initialize the extra colors}
+                  Colors[DisabledColor] := Colors[BodyColor];
+                  Colors[ShadowColor] := 0;
+                end;
+                {$ENDIF}
+                SubMenu(XL, YL, YHelp, Orient, Frame, Colors, S);
+
+                {Set width and height}
+                CurrMenu^.Active^.XH := XH;
+                CurrMenu^.Active^.YH := YH;
+              end;
+            end;
+
+          Fdraw :            {Draw mode record}
+            if P = nil then
+              PrevMenuStatus := MenuFileCorrupt
+            else begin
+              {Read the draw mode record}
+              ReadStruct(F, FDM, SizeOf(FdrawRec));
+              with CurrMenu^.Active^.Draw do begin
+                Exploding := FDM.Exploding;
+                Shadowed := FDM.Shadowed;
+                Noisy := FDM.Noisy;
+                ExploDelay := FDM.ExploDelay;
+              end;
+            end;
+
+          Fitem :            {Item record}
+            if P = nil then
+              PrevMenuStatus := MenuFileCorrupt
+            else begin
+              {Read the item record}
+              ReadStruct(F, IR, SizeOf(FitemRec));
+              {Read the name}
+              ReadString(F, S);
+              {Read the help}
+              ReadString(F, H);
+              {Add the item}
+              with IR do
+                MenuItem(S, DisplayPos, SelectPos, Key, H);
+            end;
+
+          Fpop :             {Pop to prior level}
+            if P = nil then
+              PrevMenuStatus := MenuFileCorrupt
+            else
+              PopSubLevel;
+
+          Fend :             {End of menu}
+            ;
+
+        else
+          PrevMenuStatus := MenuFileCorrupt;
+        end;
+
+      until (PrevMenuStatus <> MenuSuccess) or (FE = Fend);
+
+    end;
+
+    ReadMenuLib := Menu(P);
+    ResetMenu(Menu(P));
+
+    Close(F);
+    {Clear ioresult}
+    Junk := IoResult;
+  end;
+
+  procedure PackMenuLib(Iname, Oname : string);
+    {-Remove obsolete menu entries from library iname, creating oname}
+  label
+    ExitPoint1,
+    ExitPoint2;
+  var
+    InF : file;
+    OutF : file;
+    InHeader : LibHeader;
+    OutHeader : LibHeader;
+    MenuLen : array[1..MaxMenusInLib] of Word;
+    InEntry : array[1..MaxMenusInLib] of Integer;
+    StPos : LongInt;
+    Entry : Integer;
+    OutEntry : Integer;
+    Junk : Word;
+    MLen : Word;
+    MaxLen : Word;
+    Bytes : Word;
+    CopyBuf : Pointer;
+  begin
+    {Open the library and see if any obsolete entries}
+    OpenLibrary(InF, Iname, ObsoleteId, False, StPos);
+
+    if PrevMenuStatus <> MenuSuccess then
+      {File not found, or no obsolete entry was found}
+      goto ExitPoint1;
+
+    {Read the existing header}
+    Reset(InF, 1);
+    ReadStruct(InF, InHeader, SizeOf(LibHeader));
+
+    {Determine the length of each menu in the existing library}
+    MaxLen := 0;
+    with InHeader do
+      for Entry := 1 to MaxMenusInLib do begin
+        if Index[Entry].IdString = '' then
+          MLen := 0
+        else if Entry = MaxMenusInLib then
+          MLen := FileSize(InF)-Index[Entry].StartPos
+        else if Index[Entry+1].IdString = '' then
+          MLen := FileSize(InF)-Index[Entry].StartPos
+        else
+          MLen := Index[Succ(Entry)].StartPos-Index[Entry].StartPos;
+        if MLen > MaxLen then
+          MaxLen := MLen;
+        MenuLen[Entry] := MLen;
+      end;
+
+    {Build a new header}
+    with OutHeader do begin
+      {Use the same format as the input file}
+      HeaderId := InHeader.HeaderId;
+      FillChar(Index, SizeOf(LibHeaderArray), 0);
+    end;
+    OutEntry := 0;
+    StPos := SizeOf(LibHeader); {!!.08}
+    with InHeader do
+      for Entry := 1 to MaxMenusInLib do
+        if Index[Entry].IdString <> '' then
+          {Not an empty entry}
+          if Index[Entry].IdString <> ObsoleteId then begin
+            {Not an obsolete entry}
+            Inc(OutEntry);
+            with OutHeader.Index[OutEntry] do begin
+              IdString := Index[Entry].IdString;
+              StartPos := StPos;
+              Inc(StPos, MenuLen[Entry]);
+            end;
+            {Store the input file entry for this output entry}
+            InEntry[OutEntry] := Entry;
+          end;
+
+    {Create the new library file}
+    Assign(OutF, Oname);
+    Rewrite(OutF, 1);
+    if IoResult <> 0 then begin
+      PrevMenuStatus := MenuFileCreationError;
+      goto ExitPoint1;
+    end;
+
+    {Allocate a copy buffer}
+    if MaxAvail < MaxLen then begin
+      PrevMenuStatus := MenuNoMem;
+      Close(OutF);
+      {Clear ioresult}
+      Junk := IoResult;
+      goto ExitPoint1;
+    end;
+    GetMem(CopyBuf, MaxLen);
+
+    {Write the header}
+    WriteStruct(OutF, OutHeader, SizeOf(LibHeader));
+    if PrevMenuStatus <> MenuSuccess then
+      goto ExitPoint2;
+
+    {Copy the non-obsolete entries to the new library}
+    with OutHeader do
+      for OutEntry := 1 to MaxMenusInLib do
+        if Index[OutEntry].IdString <> '' then begin
+          {Not an empty entry}
+          Entry := InEntry[OutEntry];
+          Seek(InF, InHeader.Index[Entry].StartPos);
+          if IoResult <> 0 then begin
+            PrevMenuStatus := MenuFileReadError;
+            goto ExitPoint2;
+          end;
+          BlockRead(InF, CopyBuf^, MenuLen[Entry], Bytes);
+          if Bytes <> MenuLen[Entry] then begin
+            PrevMenuStatus := MenuFileReadError;
+            goto ExitPoint2;
+          end;
+          Seek(OutF, Index[OutEntry].StartPos);
+          if IoResult <> 0 then begin
+            PrevMenuStatus := MenuFileWriteError;
+            goto ExitPoint2;
+          end;
+          BlockWrite(OutF, CopyBuf^, MenuLen[Entry], Bytes);
+          if Bytes <> MenuLen[Entry] then begin
+            PrevMenuStatus := MenuFileWriteError;
+            goto ExitPoint2;
+          end;
+        end;
+
+ExitPoint2:
+    Close(OutF);
+    {Clear ioresult}
+    Junk := IoResult;
+    {Dispose of copy buffer}
+    FreeMemCheck(CopyBuf, MaxLen);
+
+ExitPoint1:
+    Close(InF);
+    {Clear ioresult}
+    Junk := IoResult;
+  end;

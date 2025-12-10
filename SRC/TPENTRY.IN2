@@ -1,0 +1,1392 @@
+
+  procedure FatalError(var ESR : ESrecord; Code : Byte; var Msg : string);
+    {-Beep or display error message and halt}
+  begin
+    if (Length(Msg) <> 0) and (ESR.ErrorPtr <> nil) then begin
+      {display error message from validation routine}
+      ESerrorPtr := ESR.ErrorPtr;
+      ErrorRoutine(ESR, Code, Msg);
+    end
+    else
+      {signal error with bell}
+      RingBell;
+    Halt(1);
+  end;
+
+  procedure AddFieldPrim(var ESR : ESrecord;
+                         var FR : FieldRec;
+                         var PictureSt : string;
+                         var PromptSt : string);
+    {-Low level routine to allocate and finish initializing a FieldRec}
+  var
+    FRP : FieldRecPtr;
+    LastCol : Word;
+    SaveLen : Byte;
+
+    procedure GetMemCheck(var Pntr; Size : Word);
+      {-GetMem shell, with check for adequate memory}
+    var
+      P : Pointer absolute Pntr;
+    begin
+      if not TpMemChk.GetMemCheck(P, Size) then
+        FatalError(ESR, MemoryError, InsufficientMemory);
+    end;
+
+  begin
+    with ESR, FR do begin
+      {check for valid ESR signature}
+      if Signature <> ValidESRsig then
+        FatalError(ESR, InitError, NullErrorMsg);
+
+      {check for overflow}
+      if FieldCount >= Pred(MaxFields) then
+        FatalError(ESR, OverflowError, TooManyFields);
+
+      {set up picture field if necessary}
+      SaveLen := Length(PictureSt);
+      case SaveLen of
+        000 : begin
+                PictureSt[0] := Char(EditLen);
+                FillChar(PictureSt[1], EditLen, AnyChar);
+              end;
+        255 : Dec(PictureSt[0]);
+      end;
+      if (EditLen = 0) or (EditLen >= Length(PictureSt)) then
+        EditLen := Length(PictureSt);
+
+      {check for invalid row/column}
+      LastCol := FR.eCol+Pred(EditLen);
+         {!!.08 vvvvvvvvv}
+      if (EditLen = 0) or (FR.eRow > MaxFieldRow) or (FR.pRow > MaxFieldRow) or
+        (FR.eCol > MaxFieldCol) or (FR.pCol > MaxFieldCol) then
+          FatalError(ESR, ParamError, OutOfRange);
+
+      {$IFNDEF TpEntryScrolls}
+      {scrolling not allowed}
+      if (FR.eRow > Succ(YH-YL)) or (LastCol > Succ(XH-XL)) then
+        FatalError(ESR, ParamError, OutOfRange);
+      {$ENDIF}
+
+      {allocate space for the strings and the field record}
+      GetMemCheck(FRP, SizeOf(FieldRec));
+      GetMemCheck(Picture, Length(PictureSt)+1);
+      GetMemCheck(EditSt, Length(PictureSt)+1);
+      GetMemCheck(Prompt, Length(PromptSt)+1);
+
+      {initialize remaining fields}
+      PromptAttr := ESpromptAttr;
+      FieldAttr := ESfieldAttr;
+      StringAttr := ESstringAttr;
+      CtrlAttr := ESctrlAttr;
+      prPromptAttr := ESprPromptAttr;
+      prFieldAttr := ESprFieldAttr;
+      PadChar := ESpadChar;
+      EditFlags := ESeditFlags;
+      XFlags := ESxFlags;
+      Prompt^ := PromptSt;
+      Picture^ := PictureSt;
+      EditSt^[0] := #0;
+
+      {if there's a fixed decimal pt, a comma, or a floating dollar, it's
+       automatically right justified}
+      if SaveLen <> 0 then
+        if (Pos(DecimalPt, PictureSt) <> 0) or
+           (Pos(FloatDollar, PictureSt) <> 0) or
+           (Pos(Comma, PictureSt) <> 0) then
+             SetFlag(EditFlags, RightJustifyMask);
+
+      {assign FieldID}
+      FieldID := FieldCount;
+      Inc(FieldCount);
+
+      {set default forward/backward links}
+      NextID := BadFieldID;
+      PrevID := BadFieldID;
+
+      {link up all the pointers}
+      PrevField := LastField;
+      NextField := nil;
+      if FirstField = nil then begin
+        FirstField := FRP;
+        KnownField := FRP;
+      end
+      else
+        LastField^.NextField := FRP;
+      LastField := FRP;
+    end;
+
+    {if we get here we succeeded}
+    FRP^ := FR;
+  end;
+
+  procedure AddStringField(var ESR : ESrecord;
+                           Prompt : string;
+                           pRow, pCol : Word;
+                           Picture : string;
+                           eRow, eCol : Word;
+                           EditLen : Byte;
+                           HelpIndex : Word;
+                           Validation : Pointer;
+                           var EditSt : string);
+    {-Add a field of type string}
+  var
+    FR : FieldRec;
+  begin
+    FR.pRow := pRow;
+    FR.pCol := pCol;
+    FR.eRow := eRow;
+    FR.eCol := eCol;
+    FR.EditLen := EditLen;
+    FR.HelpIndex := HelpIndex;
+    FR.DPlaces := 0;
+    FR.ValidatePtr := Validation;
+    FR.ConvertPtr := @StringConversion;
+    FR.VarPtr := @EditSt;
+    AddFieldPrim(ESR, FR, Picture, Prompt);
+  end;
+
+  procedure AddArrayField(var ESR : ESrecord;
+                          Prompt : string;
+                          pRow, pCol : Word;
+                          Picture : string;
+                          eRow, eCol : Word;
+                          EditLen : Byte;
+                          HelpIndex : Word;
+                          Validation : Pointer;
+                          var EditVar);
+    {-Add a field of type array (of char)}
+  var
+    FR : FieldRec;
+    SaveTrimState : Boolean;
+  begin
+    FR.pRow := pRow;
+    FR.pCol := pCol;
+    FR.eRow := eRow;
+    FR.eCol := eCol;
+    FR.EditLen := EditLen;
+    FR.HelpIndex := HelpIndex;
+    FR.DPlaces := 0;
+    FR.ValidatePtr := Validation;
+    FR.ConvertPtr := @ArrayConversion;
+    FR.VarPtr := @EditVar;
+    SaveTrimState := FlagIsSet(ESeditFlags, TrimBlanksMask);
+    SetTrimBlanks(Off);
+    AddFieldPrim(ESR, FR, Picture, Prompt);
+    SetTrimBlanks(SaveTrimState);
+  end;
+
+  procedure AddCharField(var ESR : ESrecord;
+                         Prompt : string;
+                         pRow, pCol : Word;
+                         Picture : string;
+                         eRow, eCol : Word;
+                         HelpIndex : Word;
+                         CharLo : Char;
+                         CharHi : Char;
+                         var EditChar : Char);
+    {-Add a field of type char}
+  var
+    FR : FieldRec;
+    SaveTrimState : Boolean;
+    SaveXflags : Word;
+  begin
+    FR.pRow := pRow;
+    FR.pCol := pCol;
+    FR.eRow := eRow;
+    FR.eCol := eCol;
+    if Length(Picture) = 0 then begin
+      Picture := AnyChar;
+      FR.EditLen := 1;
+    end
+    else
+      FR.EditLen := Length(Picture);
+    FR.HelpIndex := HelpIndex;
+    FR.DPlaces := 0;
+    if CharLo = CharHi then
+      {no special validation required}
+      FR.ValidatePtr := nil
+    else begin
+      FR.ValidatePtr := @ValidateChar;
+      FR.RangeLo.rtCh := CharLo;
+      FR.RangeHi.rtCh := CharHi;
+    end;
+    FR.ConvertPtr := @CharConversion;
+    FR.VarPtr := @EditChar;
+    SaveTrimState := FlagIsSet(ESeditFlags, TrimBlanksMask);
+    SaveXflags := ESxFlags;
+    SetTrimBlanks(Off);
+    SetFlag(ESxFlags, CharFieldMask);
+    AddFieldPrim(ESR, FR, Picture, Prompt);
+    SetTrimBlanks(SaveTrimState);
+    ESxFlags := SaveXflags;
+  end;
+
+  procedure AddBooleanField(var ESR : ESrecord;
+                            Prompt : string;
+                            pRow, pCol : Word;
+                            Picture : string;
+                            eRow, eCol : Word;
+                            HelpIndex : Word;
+                            var EditBool : Boolean);
+    {-Add a field of type boolean}
+  var
+    FR : FieldRec;
+    SaveXflags : Word;
+  begin
+    FR.pRow := pRow;
+    FR.pCol := pCol;
+    FR.eRow := eRow;
+    FR.eCol := eCol;
+    if Length(Picture) = 0 then begin
+      Picture := BooleanOnly;
+      FR.EditLen := 1;
+    end
+    else
+      FR.EditLen := Length(Picture);
+    FR.HelpIndex := HelpIndex;
+    FR.DPlaces := 0;
+    FR.ValidatePtr := @ValidateBoolean;
+    FR.ConvertPtr := @BooleanConversion;
+    FR.VarPtr := @EditBool;
+    SaveXflags := ESxFlags;
+    SetFlag(ESxFlags, BooleanFieldMask+AllowClickExit);
+    AddFieldPrim(ESR, FR, Picture, Prompt);
+    ESxFlags := SaveXflags;
+  end;
+
+  procedure AddYesNoField(var ESR : ESrecord;
+                          Prompt : string;
+                          pRow, pCol : Word;
+                          Picture : string;
+                          eRow, eCol : Word;
+                          HelpIndex : Word;
+                          var EditYesNo : Boolean);
+    {-Add a field of type yes/no}
+  var
+    FR : FieldRec;
+    SaveXflags : Word;
+  begin
+    FR.pRow := pRow;
+    FR.pCol := pCol;
+    FR.eRow := eRow;
+    FR.eCol := eCol;
+    if Length(Picture) = 0 then begin
+      Picture := YesNoOnly;
+      FR.EditLen := 1;
+    end
+    else
+      FR.EditLen := Length(Picture);
+    FR.HelpIndex := HelpIndex;
+    FR.DPlaces := 0;
+    FR.ValidatePtr := @ValidateYesNo;
+    FR.ConvertPtr := @YesNoConversion;
+    FR.VarPtr := @EditYesNo;
+    SaveXflags := ESxFlags;
+    SetFlag(ESxFlags, BooleanFieldMask+AllowClickExit);
+    AddFieldPrim(ESR, FR, Picture, Prompt);
+    ESxFlags := SaveXflags;
+  end;
+
+  procedure AddLongField(var ESR : ESrecord;
+                         Prompt : string;
+                         pRow, pCol : Word;
+                         Picture : string;
+                         eRow, eCol : Word;
+                         HelpIndex : Word;
+                         LongLo : LongInt;
+                         LongHi : LongInt;
+                         var EditLong : LongInt);
+    {-Add a field of type LongInt}
+  var
+    FR : FieldRec;
+  begin
+    FR.pRow := pRow;
+    FR.pCol := pCol;
+    FR.eRow := eRow;
+    FR.eCol := eCol;
+    FR.EditLen := Length(Picture);
+    FR.HelpIndex := HelpIndex;
+    FR.DPlaces := 0;
+    FR.ConvertPtr := @LongConversion;
+    FR.ValidatePtr := @ValidateLong;
+    if LongLo = LongHi then begin
+      FR.RangeLo.rtL := $80000000;
+      FR.RangeHi.rtL := $7FFFFFFF;
+    end
+    else begin
+      FR.RangeLo.rtL := LongLo;
+      FR.RangeHi.rtL := LongHi;
+    end;
+    FR.VarPtr := @EditLong;
+    AddFieldPrim(ESR, FR, Picture, Prompt);
+  end;
+
+  procedure AddWordField(var ESR : ESrecord;
+                         Prompt : string;
+                         pRow, pCol : Word;
+                         Picture : string;
+                         eRow, eCol : Word;
+                         HelpIndex : Word;
+                         WordLo : Word;
+                         WordHi : Word;
+                         var EditWord : Word);
+    {-Add a field of type word}
+  var
+    FR : FieldRec;
+  begin
+    FR.pRow := pRow;
+    FR.pCol := pCol;
+    FR.eRow := eRow;
+    FR.eCol := eCol;
+    FR.EditLen := Length(Picture);
+    FR.HelpIndex := HelpIndex;
+    FR.DPlaces := 0;
+    FR.ConvertPtr := @WordConversion;
+    {use the validation routine for longints to save code space}
+    FR.ValidatePtr := @ValidateLong;
+    if WordLo = WordHi then begin
+      {allow only valid word range}
+      FR.RangeLo.rtL := 0;
+      FR.RangeHi.rtL := 65535;
+    end
+    else begin
+      FR.RangeLo.rtL := WordLo;
+      FR.RangeHi.rtL := WordHi;
+    end;
+    FR.VarPtr := @EditWord;
+    AddFieldPrim(ESR, FR, Picture, Prompt);
+  end;
+
+  procedure AddIntField(var ESR : ESrecord;
+                        Prompt : string;
+                        pRow, pCol : Word;
+                        Picture : string;
+                        eRow, eCol : Word;
+                        HelpIndex : Word;
+                        IntLo : Integer;
+                        IntHi : Integer;
+                        var EditInt : Integer);
+    {-Add a field of type integer}
+  var
+    FR : FieldRec;
+  begin
+    FR.pRow := pRow;
+    FR.pCol := pCol;
+    FR.eRow := eRow;
+    FR.eCol := eCol;
+    FR.EditLen := Length(Picture);
+    FR.HelpIndex := HelpIndex;
+    FR.DPlaces := 0;
+    FR.ConvertPtr := @IntConversion;
+    {use the validation routine for longints to save code space}
+    FR.ValidatePtr := @ValidateLong;
+    if IntLo = IntHi then begin
+      {allow only valid integer range}
+      FR.RangeLo.rtL := -32768;
+      FR.RangeHi.rtL := MaxInt;
+    end
+    else begin
+      FR.RangeLo.rtL := IntLo;
+      FR.RangeHi.rtL := IntHi;
+    end;
+    FR.VarPtr := @EditInt;
+    AddFieldPrim(ESR, FR, Picture, Prompt);
+  end;
+
+  procedure AddByteField(var ESR : ESrecord;
+                         Prompt : string;
+                         pRow, pCol : Word;
+                         Picture : string;
+                         eRow, eCol : Word;
+                         HelpIndex : Word;
+                         ByteLo : Byte;
+                         ByteHi : Byte;
+                         var EditByte : Byte);
+    {-Add a field of type byte}
+  var
+    FR : FieldRec;
+  begin
+    FR.pRow := pRow;
+    FR.pCol := pCol;
+    FR.eRow := eRow;
+    FR.eCol := eCol;
+    FR.EditLen := Length(Picture);
+    FR.HelpIndex := HelpIndex;
+    FR.DPlaces := 0;
+    FR.ConvertPtr := @ByteConversion;
+    {use the validation routine for longints to save code space}
+    FR.ValidatePtr := @ValidateLong;
+    if ByteLo = ByteHi then begin
+      {allow only valid byte range}
+      FR.RangeLo.rtL := 0;
+      FR.RangeHi.rtL := 255;
+    end
+    else begin
+      FR.RangeLo.rtL := ByteLo;
+      FR.RangeHi.rtL := ByteHi;
+    end;
+    FR.VarPtr := @EditByte;
+    AddFieldPrim(ESR, FR, Picture, Prompt);
+  end;
+
+  procedure AddShortField(var ESR : ESrecord;
+                          Prompt : string;
+                          pRow, pCol : Word;
+                          Picture : string;
+                          eRow, eCol : Word;
+                          HelpIndex : Word;
+                          ShortLo : ShortInt;
+                          ShortHi : ShortInt;
+                          var EditShort : ShortInt);
+    {-Add a field of type shortint}
+  var
+    FR : FieldRec;
+  begin
+    FR.pRow := pRow;
+    FR.pCol := pCol;
+    FR.eRow := eRow;
+    FR.eCol := eCol;
+    FR.EditLen := Length(Picture);
+    FR.HelpIndex := HelpIndex;
+    FR.DPlaces := 0;
+    FR.ConvertPtr := @ShortConversion;
+    {use the validation routine for longints to save code space}
+    FR.ValidatePtr := @ValidateLong;
+    if ShortLo = ShortHi then begin
+      {allow only valid shortint range}
+      FR.RangeLo.rtL := -128;
+      FR.RangeHi.rtL := 127;
+    end
+    else begin
+      FR.RangeLo.rtL := ShortLo;
+      FR.RangeHi.rtL := ShortHi;
+    end;
+    FR.VarPtr := @EditShort;
+    AddFieldPrim(ESR, FR, Picture, Prompt);
+  end;
+
+  procedure AddRealField(var ESR : ESrecord;
+                         Prompt : string;
+                         pRow, pCol : Word;
+                         Picture : string;
+                         eRow, eCol : Word;
+                         HelpIndex : Word;
+                         RealLo : Real;
+                         RealHi : Real;
+                         Places : Byte;
+                         var EditReal : Real);
+    {-Add a field of type real}
+  var
+    FR : FieldRec;
+  begin
+    FR.pRow := pRow;
+    FR.pCol := pCol;
+    FR.eRow := eRow;
+    FR.eCol := eCol;
+    FR.EditLen := Length(Picture);
+    FR.HelpIndex := HelpIndex;
+    FR.ConvertPtr := @RealConversion;
+
+    {check decimal places}
+    if Pos(DecimalPt, Picture) = 0 then
+      FR.DPlaces := Places
+    else
+      FR.DPlaces := 0;
+
+    FR.ValidatePtr := @ValidateReal;
+    if RealLo = RealHi then begin
+      {allow only valid real range}
+      FR.RangeLo.rtR := -1.5e+38;
+      FR.RangeHi.rtR := +1.5e+38;
+    end
+    else begin
+      FR.RangeLo.rtR := RealLo;
+      FR.RangeHi.rtR := RealHi;
+    end;
+    FR.VarPtr := @EditReal;
+    AddFieldPrim(ESR, FR, Picture, Prompt);
+  end;
+
+{$IFDEF UseBCD}
+
+  procedure AddBcdField(var ESR : ESrecord; {the edit screen to add to}
+                        Prompt : string;         {edit prompt}
+                        pRow, pCol : Word;       {coordinates for prompt}
+                        Picture : string;        {edit mask}
+                        eRow, eCol : Word;       {coordinates for edit field}
+                        HelpIndex : Word;        {index to pass to help routine}
+                        BcdLo : BCD;             {low value}
+                        BcdHi : BCD;             {high value}
+                        Places : Byte;           {max decimal places}
+                        var EditBcd : BCD);      {BCD to edit}
+    {-Add a field of type BCD}
+  const
+    MinBCD : BCD = ($FF,$00,$00,$00,$00,$00,$00,$00,$00,$99); {-9.9e+63}
+    MaxBCD : BCD = ($7F,$99,$99,$99,$99,$99,$99,$99,$99,$99); {+9.9e+63}
+  var
+    FR : FieldRec;
+  begin
+    FR.pRow := pRow;
+    FR.pCol := pCol;
+    FR.eRow := eRow;
+    FR.eCol := eCol;
+    FR.EditLen := Length(Picture);
+    FR.HelpIndex := HelpIndex;
+    FR.ConvertPtr := @BcdConversion;
+
+    {check decimal places}
+    if Pos(DecimalPt, Picture) = 0 then
+      FR.DPlaces := Places
+    else
+      FR.DPlaces := 0;
+
+    FR.ValidatePtr := @ValidateBcd;
+    if EqualBCD(BcdLo, BcdHi) then begin
+      {allow only valid BCD range}
+      FR.RangeLo.rtBcd := MinBCD;
+      FR.RangeHi.rtBcd := MaxBCD;
+    end
+    else begin
+      FR.RangeLo.rtBcd := BcdLo;
+      FR.RangeHi.rtBcd := BcdHi;
+    end;
+    FR.VarPtr := @EditBcd;
+    AddFieldPrim(ESR, FR, Picture, Prompt);
+  end;
+
+{$ENDIF}
+
+{$IFOPT N+}
+
+  procedure AddExtField(var ESR : ESrecord;
+                        Prompt : string;
+                        pRow, pCol : Word;
+                        Picture : string;
+                        eRow, eCol : Word;
+                        HelpIndex : Word;
+                        ExtLo : Extended;
+                        ExtHi : Extended;
+                        Places : Byte;
+                        var EditExt : Extended);
+    {-Add a field of type extended}
+  var
+    FR : FieldRec;
+  begin
+    FR.pRow := pRow;
+    FR.pCol := pCol;
+    FR.eRow := eRow;
+    FR.eCol := eCol;
+    FR.EditLen := Length(Picture);
+    FR.HelpIndex := HelpIndex;
+    FR.ConvertPtr := @ExtConversion;
+
+    {check decimal places}
+    if Pos(DecimalPt, Picture) = 0 then
+      FR.DPlaces := Places
+    else
+      FR.DPlaces := 0;
+
+    FR.ValidatePtr := @ValidateExt;
+    if ExtLo = ExtHi then begin
+      {allow only valid extended range}
+      FR.RangeLo.rtE := -1.1e+4931;
+      FR.RangeHi.rtE := +1.1e+4931;
+    end
+    else begin
+      FR.RangeLo.rtE := ExtLo;
+      FR.RangeHi.rtE := ExtHi;
+    end;
+    FR.VarPtr := @EditExt;
+    AddFieldPrim(ESR, FR, Picture, Prompt);
+  end;
+
+  procedure AddDblField(var ESR : ESrecord;
+                        Prompt : string;
+                        pRow, pCol : Word;
+                        Picture : string;
+                        eRow, eCol : Word;
+                        HelpIndex : Word;
+                        DblLo : Double;
+                        DblHi : Double;
+                        Places : Byte;
+                        var EditDbl : Double);
+    {-Add a field of type double}
+  var
+    FR : FieldRec;
+  begin
+    FR.pRow := pRow;
+    FR.pCol := pCol;
+    FR.eRow := eRow;
+    FR.eCol := eCol;
+    FR.EditLen := Length(Picture);
+    FR.HelpIndex := HelpIndex;
+    FR.ConvertPtr := @DblConversion;
+
+    {check decimal places}
+    if Pos(DecimalPt, Picture) = 0 then
+      FR.DPlaces := Places
+    else
+      FR.DPlaces := 0;
+
+    {use the validation routine for extendeds to save code space}
+    FR.ValidatePtr := @ValidateExt;
+    if DblLo = DblHi then begin
+      {allow only valid double range}
+      FR.RangeLo.rtE := -1.7e+308;
+      FR.RangeHi.rtE := +1.7e+308;
+    end
+    else begin
+      FR.RangeLo.rtE := DblLo;
+      FR.RangeHi.rtE := DblHi;
+    end;
+    FR.VarPtr := @EditDbl;
+    AddFieldPrim(ESR, FR, Picture, Prompt);
+  end;
+
+  procedure AddSglField(var ESR : ESrecord;
+                        Prompt : string;
+                        pRow, pCol : Word;
+                        Picture : string;
+                        eRow, eCol : Word;
+                        HelpIndex : Word;
+                        SglLo : Single;
+                        SglHi : Single;
+                        Places : Byte;
+                        var EditSgl : Single);
+    {-Add a field of type single}
+  var
+    FR : FieldRec;
+  begin
+    FR.pRow := pRow;
+    FR.pCol := pCol;
+    FR.eRow := eRow;
+    FR.eCol := eCol;
+    FR.EditLen := Length(Picture);
+    FR.HelpIndex := HelpIndex;
+    FR.ConvertPtr := @SglConversion;
+
+    {check decimal places}
+    if Pos(DecimalPt, Picture) = 0 then
+      FR.DPlaces := Places
+    else
+      FR.DPlaces := 0;
+
+    {use the validation routine for extendeds to save code space}
+    FR.ValidatePtr := @ValidateExt;
+    if SglLo = SglHi then begin
+      {allow only valid single range}
+      FR.RangeLo.rtE := -3.4e+38;
+      FR.RangeHi.rtE := +3.4e+38;
+    end
+    else begin
+      FR.RangeLo.rtE := SglLo;
+      FR.RangeHi.rtE := SglHi;
+    end;
+    FR.VarPtr := @EditSgl;
+    AddFieldPrim(ESR, FR, Picture, Prompt);
+  end;
+
+  procedure AddCompField(var ESR : ESrecord;
+                        Prompt : string;
+                        pRow, pCol : Word;
+                        Picture : string;
+                        eRow, eCol : Word;
+                        HelpIndex : Word;
+                        CompLo : Comp;
+                        CompHi : Comp;
+                        var EditComp : Comp);
+    {-Add a field of type comp}
+  var
+    FR : FieldRec;
+  begin
+    FR.pRow := pRow;
+    FR.pCol := pCol;
+    FR.eRow := eRow;
+    FR.eCol := eCol;
+    FR.EditLen := Length(Picture);
+    FR.HelpIndex := HelpIndex;
+    FR.ConvertPtr := @CompConversion;
+    FR.DPlaces := 0;
+    {use the validation routine for extendeds to save code space}
+    FR.ValidatePtr := @ValidateExt;
+    if CompLo = CompHi then begin
+      {allow only valid comp range}
+      FR.RangeLo.rtE := -9.2e18;
+      FR.RangeHi.rtE := +9.2e18;
+    end
+    else begin
+      FR.RangeLo.rtE := CompLo;
+      FR.RangeHi.rtE := CompHi;
+    end;
+    FR.VarPtr := @EditComp;
+    AddFieldPrim(ESR, FR, Picture, Prompt);
+  end;
+
+{$ENDIF}
+
+  procedure AddDateField(var ESR : ESrecord;
+                         Prompt : string;
+                         pRow, pCol : Word;
+                         Picture : DateString;
+                         eRow, eCol : Word;
+                         HelpIndex : Word;
+                         DateLo : Date;
+                         DateHi : Date;
+                         var EditDate : Date);
+    {-Add an edit field of type date}
+  var
+    FR : FieldRec;
+  begin
+    FR.pRow := pRow;
+    FR.pCol := pCol;
+    FR.eRow := eRow;
+    FR.eCol := eCol;
+    if Length(Picture) = 0 then
+      Picture := 'mm/dd/yy';
+    FR.EditLen := Length(Picture);
+    FR.HelpIndex := HelpIndex;
+    FR.DPlaces := 0;
+    FR.ConvertPtr := @DateConversion;
+    FR.ValidatePtr := @ValidateDate;
+    if DateLo = DateHi then begin
+      FR.RangeLo.rtDat := MinDate;
+      FR.RangeHi.rtDat := MinDate;
+    end
+    else begin
+      FR.RangeLo.rtDat := DateLo;
+      FR.RangeHi.rtDat := DateHi;
+    end;
+    FR.VarPtr := @EditDate;
+    AddFieldPrim(ESR, FR, Picture, Prompt);
+
+    {don't allow blank trimming}
+    ClearFlag(ESR.LastField^.EditFlags, TrimBlanksMask);
+  end;
+
+  procedure AddDateStField(var ESR : ESrecord;
+                           Prompt : string;
+                           pRow, pCol : Word;
+                           Picture : DateString;
+                           eRow, eCol : Word;
+                           HelpIndex : Word;
+                           var EditDate : DateString);
+    {-Add an edit field of type date string}
+  var
+    FR : FieldRec;
+  begin
+    FR.pRow := pRow;
+    FR.pCol := pCol;
+    FR.eRow := eRow;
+    FR.eCol := eCol;
+    if Length(Picture) = 0 then
+      Picture := 'mm/dd/yy';
+    FR.EditLen := Length(Picture);
+    FR.HelpIndex := HelpIndex;
+    FR.DPlaces := 0;
+    FR.ConvertPtr := @DateStConversion;
+    FR.ValidatePtr := @ValidateDateSt;
+    FR.VarPtr := @EditDate;
+    if Length(EditDate) <> FR.EditLen then
+      EditDate[0] := #0;
+    AddFieldPrim(ESR, FR, Picture, Prompt);
+
+    {don't allow blank trimming}
+    ClearFlag(ESR.LastField^.EditFlags, TrimBlanksMask);
+  end;
+
+  procedure AddTimeField(var ESR : ESrecord;
+                         Prompt : string;
+                         pRow, pCol : Word;
+                         Picture : DateString;
+                         eRow, eCol : Word;
+                         HelpIndex : Word;
+                         TimeLo : Time;
+                         TimeHi : Time;
+                         var EditTime : Time);
+    {-Add an edit field of type time record}
+  var
+    FR : FieldRec;
+  begin
+    FR.pRow := pRow;
+    FR.pCol := pCol;
+    FR.eRow := eRow;
+    FR.eCol := eCol;
+    if Length(Picture) = 0 then
+      Picture := 'hh:mm:ss';
+    FR.EditLen := Length(Picture);
+    FR.HelpIndex := HelpIndex;
+    FR.DPlaces := 0;
+    FR.ConvertPtr := @TimeConversion;
+    FR.ValidatePtr := @ValidateTime;
+    FR.VarPtr := @EditTime;
+    FR.RangeLo.rtL := TimeLo;
+    FR.RangeHi.rtL := TimeHi;
+    AddFieldPrim(ESR, FR, Picture, Prompt);
+
+    {don't allow blank trimming}
+    ClearFlag(ESR.LastField^.EditFlags, TrimBlanksMask);
+  end;
+
+  procedure AddUserField(var ESR : ESrecord;
+                         Prompt : string;
+                         pRow, pCol : Word;
+                         Picture : string;
+                         eRow, eCol : Word;
+                         EditLen : Byte;
+                         HelpIndex : Word;
+                         Validation : Pointer;
+                         Conversion : Pointer;
+                         UserPtr1 : Pointer;
+                         UserPtr2 : Pointer;
+                         var EditVar);
+    {-Add a field of a user-defined type}
+  var
+    FR : FieldRec;
+  begin
+    FR.pRow := pRow;
+    FR.pCol := pCol;
+    FR.eRow := eRow;
+    FR.eCol := eCol;
+    FR.EditLen := EditLen;
+    FR.HelpIndex := HelpIndex;
+    FR.DPlaces := 0;
+    FR.ValidatePtr := Validation;
+    FR.ConvertPtr := Conversion;
+    FR.RangeLo.rtP := UserPtr1;
+    FR.RangeHi.rtP := UserPtr2;
+    FR.VarPtr := @EditVar;
+    AddFieldPrim(ESR, FR, Picture, Prompt);
+  end;
+
+  procedure AddNestedField(var ESR : ESrecord;
+                           Prompt : string;
+                           pRow, pCol : Word;
+                           Picture : string;
+                           eRow, eCol : Word;
+                           EditLen : Byte;
+                           HelpIndex : Word);
+    {-Add a field that is associated with a nested form}
+  var
+    FR : FieldRec;
+    SaveFlags : Word;
+  begin
+    FR.pRow := pRow;
+    FR.pCol := pCol;
+    FR.eRow := eRow;
+    FR.eCol := eCol;
+    FR.EditLen := EditLen;
+    FR.HelpIndex := HelpIndex;
+    FR.VarPtr := nil;
+    FR.ConvertPtr := @NestedConversion;
+    FR.ValidatePtr := nil;
+
+    {force numeric and multiple choice flags off}
+    SaveFlags := ESeditFlags;
+    SetRequired(Off);                               {!!.12}
+    {$IFDEF IncludeNumeric}
+    SetNumeric(Off);
+    {$ENDIF}
+    {$IFDEF IncludeChoice}
+    ClearFlag(ESeditFlags, MultChoiceMask);
+    {$ENDIF}
+    SetFlag(ESeditFlags, NestedMask);
+
+    {add the field and restore the previous flag settings}
+    AddFieldPrim(ESR, FR, Picture, Prompt);
+    ESeditFlags := SaveFlags;
+  end;
+
+  {$IFDEF IncludeChoice}
+  procedure AddChoiceField(var ESR : ESrecord;
+                           Prompt : string;
+                           pRow, pCol : Word;
+                           Picture : string;
+                           eRow, eCol : Word;
+                           HelpIndex : Word;
+                           DataSize : Byte;
+                           Increment : Pointer;
+                           var EditVar);
+    {-Add a multiple choice field}
+  var
+    FR : FieldRec;
+    SaveFlags : Word;
+  begin
+    FR.pRow := pRow;
+    FR.pCol := pCol;
+    FR.eRow := eRow;
+    FR.eCol := eCol;
+    FR.EditLen := Length(Picture);
+    FR.HelpIndex := HelpIndex;
+    FR.VarPtr := @EditVar;
+    FR.ConvertPtr := @ChoiceConversion;
+
+    if DataSize > SizeOf(RangeType) then
+      FatalError(ESR, ParamError, NullErrorMsg);
+
+    {use DPlaces field to store data size}
+    FR.DPlaces := DataSize;
+
+    {validation routine actually handles incrementing/conversion}
+    FR.ValidatePtr := Increment;
+
+    {force numeric off and select multiple choice}
+    SaveFlags := ESeditFlags;
+    {$IFDEF IncludeNumeric}
+    SetNumeric(Off);
+    {$ENDIF}
+    SetFlag(ESeditFlags, MultChoiceMask);
+
+    {add the field and restore the previous flag settings}
+    AddFieldPrim(ESR, FR, Picture, Prompt);
+    ESeditFlags := SaveFlags;
+  end;
+  {$ENDIF}
+
+  {--------- miscellaneous routines ---------}
+
+  function AddEntryCommand(Cmd : EStype; NumKeys : Byte; Key1, Key2 : Word) : Boolean;
+    {-Add a new command key assignment or change an existing one}
+  begin
+    AddEntryCommand :=
+      AddCommandPrim(EntryKeySet, EntryKeyMax, Cmd, NumKeys, Key1, Key2);
+  end;
+
+  function InternationalCurrency(FormChar : Char; MaxDigits : Byte;
+                                 FloatIfPossible : Boolean;
+                                 AddCommas : Boolean) : string;
+    {-Return a picture mask for a currency string, based on DOS's country info.}
+  var
+    Info : CountryInfo;
+    Dos2 : Boolean;
+    S : string;
+    SLen : Byte absolute S;
+    I, J : Word;
+    CTemp : string[5];
+    CTlen : Byte absolute CTemp;
+    CLSlen : Byte absolute CurrencyLtStr;
+    CRSlen : Byte absolute CurrencyRtStr;
+  begin
+    {get country information table}
+    if (MaxDigits = 0) or not GetCountryInfo(Dos2, Info) then begin
+      InternationalCurrency[0] := #0;
+      Exit;
+    end;
+
+    {initialize S with the numeric part of the string to left of decimal point}
+    I := Pred(MaxDigits) div 3 ;
+    J := Word(MaxDigits)+(I*Ord(AddCommas));
+    if J > 247 then
+      SLen := 247
+    else
+      SLen := J;
+    FillChar(S[1], SLen, FormChar);
+    if AddCommas then begin
+      {insert commas at appropriate points}
+      J := 0;
+      for I := SLen downto 1 do
+        if J = 3 then begin
+          S[I] := Comma;
+          J := 0;
+        end
+        else
+          Inc(J);
+    end;
+
+    {wipe out the current currency strings}
+    CLSlen := 0;
+    CRSlen := 0;
+
+    {fix DigitOnlySet}
+    DigitOnlySet := DigitOnlySet-[DecimalChar];
+
+    with Info do begin
+
+      if Dos2 then begin
+        {limited information available}
+        CommaChar := CommaSym1;
+        DecimalChar := DecimalSym1;
+
+        {use US format since we don't know any better}
+        CurrencyLtStr := CurrencySym;
+        CurrencyForm := 0;
+
+        {assume two decimal points}
+        Decimals := 2;
+      end
+      else begin
+        {get the easy stuff first}
+        CommaChar := CommaSym2;
+        DecimalChar := DecimalSym2;
+
+        {extract the currency string}
+        CTlen := 1;
+        while (CurrencyStr[CTlen] <> #0) and (CTlen <= 4) do begin
+          CTemp[CTlen] := CurrencyStr[CTlen];
+          Inc(CTlen);
+        end;
+        Dec(CTlen);
+
+        {use US format if we don't know any better}
+        if CurrencyForm > 3 then
+          CurrencyForm := 0;
+
+        {now fix up the currency strings}
+        case CurrencyForm of
+          0 :  {symbol leads currency, no space}
+           CurrencyLtStr := CTemp;
+          1 :  {symbol follows currency, no space}
+           CurrencyRtStr := CTemp;
+          2 :  {symbol leads currency, one space}
+           CurrencyLtStr := CTemp+' ';
+          3 :  {symbol follows currency, one space}
+           CurrencyRtStr := ' '+CTemp;
+        end;
+      end;
+
+      {fix DigitOnlySet}
+      DigitOnlySet := DigitOnlySet+[DecimalChar];
+
+      {add in the decimals}
+      if Decimals > 0 then begin
+        Inc(SLen);
+        S[SLen] := DecimalPt;
+        FillChar(S[SLen+1], Decimals, FormChar);
+        Inc(SLen, Decimals);
+      end;
+
+      {see if we can do a floating currency symbol}
+      if FloatIfPossible then
+        FloatIfPossible := (CurrencyForm = 0) or (CurrencyForm = 2);
+
+      {plug in the picture characters for the currency symbol}
+      if FloatIfPossible then
+        S := CharStr(FloatDollar, CLSlen)+S
+      else if CLSlen <> 0 then
+        S := CharStr(CurrencyLt, CLSlen)+S
+      else
+        S := S+CharStr(CurrencyRt, CRSlen);
+    end;
+
+    InternationalCurrency := S;
+  end;
+
+  function EvaluateESCommand(var ESR : ESrecord; ESC : EStype) : FieldRecPtr;
+    {-Given a command, return a pointer to the field the cursor will move to
+      next}
+  label
+    Retry1, Retry2;
+  const
+    FRP : FieldRecPtr = nil;
+  var
+    SaveCurrentField : FieldRecPtr; {!!.08}
+    I, J : Word;
+    OK : Boolean;
+    PosCode : Byte;
+    Row, Col : Word;
+
+    function IDisValid(ID : Word) : Boolean;
+      {-Return True if ID is a valid ID number for an unprotected field}
+    var
+      FRP : FieldRecPtr;
+    begin
+      if ID = BadFieldID then
+        IDisValid := False
+      else begin
+        FRP := FindFieldID(ESR, ID);
+        IDisValid := (FRP <> nil) and not FieldIsProtected(FRP);
+      end;
+    end;
+
+    procedure SeekToFirst;
+      {-Move to first unprotected field}
+    begin
+      FRP := ESR.FirstField;
+      while FieldIsProtected(FRP) do
+        FRP := FRP^.NextField;
+    end;
+
+    procedure SeekToLast;
+      {-Move to last unprotected field}
+    begin
+      FRP := ESR.LastField;
+      while FieldIsProtected(FRP) do
+        FRP := FRP^.PrevField;
+    end;
+
+    procedure WrapAtTop;
+      {-Deal with wrap at top of edit screen}
+    begin
+      if ESR.WrapMode = WrapAtEdges then
+        SeekToLast
+      else
+        FRP := nil;
+    end;
+
+    procedure WrapAtBottom;
+      {-Deal with wrap at bottom of edit screen}
+    begin
+      if ESR.WrapMode = WrapAtEdges then
+        SeekToFirst
+      else
+        FRP := nil;
+    end;
+
+    function FindBestFieldOnRow(Row, Col : Word) : Boolean;
+      {-Find the best field on current row for the cursor when moving up or
+        down}
+    var
+      SaveFRP : FieldRecPtr;
+    begin
+      FindBestFieldOnRow := True;
+      SaveFRP := nil;
+
+      {find the last field on the row with an eCol <= Col}
+      while (FRP^.NextField <> nil) and (FRP^.NextField^.eRow = Row) and (FRP^.NextField^.eCol <= Col) do begin
+        {save the current field if it's not protected}
+        if not FieldIsProtected(FRP) then
+          SaveFRP := FRP;
+
+        {point to next field}
+        FRP := FRP^.NextField;
+      end;
+
+      {OK if not protected}
+      if FieldIsProtected(FRP) then
+        {use the last unprotected field if there is one}
+        if SaveFRP <> nil then
+          FRP := SaveFRP
+        else begin
+          {try the rest of the row}
+          while (FRP^.NextField <> nil) and (FRP^.NextField^.eRow = Row) and (SaveFRP = nil) do begin
+            FRP := FRP^.NextField;
+            {save the current field if it's not protected}
+            if not FieldIsProtected(FRP) then
+              SaveFRP := FRP;
+          end;
+
+          {no luck if all fields on this row are protected}
+          if SaveFRP = nil then
+            FindBestFieldOnRow := False;
+        end;
+    end;
+
+    procedure PageUpOrDown(Delta : Integer);
+      {-Process PgUp/PgDn commands}
+      {-Note: Page calculations treat 0 as first page #}
+    label         {!!.09}
+      Restart;    {!!.09}
+    var
+      WHeight : Integer;
+      MaxPage : Integer;
+      CurPage : Integer;
+      NewPage : Integer;
+      NewRow  : Integer;
+      CurCol  : Integer;
+    begin
+      with ESR, CurrentField^ do begin
+        WHeight := Succ(YH-YL);
+        {$IFDEF TpEntryScrolls}
+        if WindowScrolls = 1 then
+          MaxPage := Pred(VS.VRows) div WHeight
+        else
+        {$ENDIF}
+          MaxPage := 0;
+        CurPage := Pred(eRow) div WHeight;
+
+Restart:          {!!.09}
+        {don't switch pages on PgUp if start of CurPage not on screen}
+        if (Delta < 0) and (RowOffset > (CurPage * WHeight)) and {!!.10}
+           (CurPage = MaxPage-1) then begin                      {!!.10}
+             NewPage := CurPage;                                 {!!.10}
+             Delta := 0;                                         {!!.10}
+           end                                                   {!!.10}
+        else
+          NewPage := CurPage + Delta;
+
+        {don't go too far}
+        if (NewPage < 0) then
+          NewPage := 0
+        else if (NewPage > MaxPage) then
+          NewPage := MaxPage;
+
+        if (NewPage = MaxPage) and (CurPage = MaxPage) and (Delta > 0) then
+          {special case--PgDn while already on last page}
+          NewRow := LastRow
+        else
+          NewRow := Succ(NewPage * WHeight);
+
+        CurCol := Word(WhereXAbs-XL)+ColOffset;
+
+        if NewRow >= CurrentField^.eRow then
+          FRP := CurrentField
+        else
+          FRP := FirstField;
+        repeat
+          {find first field on row}
+          while (FRP <> nil) and (FRP^.eRow < NewRow) do
+            FRP := FRP^.NextField;
+
+          if FRP = nil then
+            Exit
+          else begin
+            NewRow := FRP^.eRow;
+            {if Delta < 0 and we're on same page try going back another page}
+            if (Delta < 0) and (Pred(NewRow) div WHeight = CurPage) then {!!.09}
+              if (NewPage > 0) then begin                                {!!.09}
+                Dec(Delta);                                              {!!.09}
+                goto Restart;                                            {!!.09}
+              end;                                                       {!!.09}
+            if FindBestFieldOnRow(NewRow, CurCol) then
+              Exit
+            else
+              Inc(NewRow);
+          end;
+        until (FRP = nil) or (NewRow > LastRow);
+        if (NewRow > LastRow) then
+          FRP := nil;
+      end;
+    end;
+
+    procedure GotoNextField;
+      {-Move cursor to next field}
+    begin
+      with ESR do begin
+        FRP := CurrentField^.NextField;
+        while (FRP <> nil) and FieldIsProtected(FRP) do
+          FRP := FRP^.NextField;
+        if FRP = nil then
+          WrapAtBottom
+        else
+          CurrentField := FRP;
+      end;
+    end;
+
+    procedure GotoPrevField;
+      {-Move cursor to previous field}
+    begin
+      with ESR do begin
+        FRP := CurrentField^.PrevField;
+        while (FRP <> nil) and FieldIsProtected(FRP) do
+          FRP := FRP^.PrevField;
+        if FRP = nil then
+          WrapAtTop
+        else
+          CurrentField := FRP;
+      end;
+    end;
+
+  begin
+    with ESR, ESR.CurrentField^ do begin
+      FRP := nil;
+      SaveCurrentField := CurrentField; {!!.08}
+
+      {special case if only one field}
+      if FieldCount > 1 then
+        {move from field to field if appropriate}
+        case ESC of
+          ESupField :
+            if PrevField <> nil then begin
+              {find next unprotected field with coordinates above this one}
+              FRP := CurrentField;
+              Row := FRP^.eRow;
+              Col := Word(WhereXAbs-XL)+ColOffset;
+
+Retry1:       {find the next row up with a field on it}
+              repeat
+                FRP := FRP^.PrevField;
+              until (FRP = nil) or (FRP^.eRow < Row);
+
+              {find anything?}
+              if FRP = nil then
+                WrapAtTop
+              else begin
+                {we've found the next row up--now find the first field on it}
+                Row := FRP^.eRow;
+                while (FRP^.PrevField <> nil) and (FRP^.PrevField^.eRow = Row) do
+                  FRP := FRP^.PrevField;
+
+                {find the best field}
+                if not FindBestFieldOnRow(Row, Col) then
+                  goto Retry1;
+              end;
+            end
+            else
+              WrapAtTop;
+
+          ESdownField :
+            if NextField <> nil then begin
+              {find next unprotected field with coordinates below this one}
+              FRP := CurrentField;
+              Row := FRP^.eRow;
+              Col := Word(WhereXAbs-XL)+ColOffset;
+
+Retry2:       {find the next row down with a field on it}
+              repeat
+                FRP := FRP^.NextField;
+              until (FRP = nil) or (FRP^.eRow > Row);
+
+              {find anything?}
+              if FRP = nil then
+                WrapAtBottom
+              else begin
+                {reset current row}
+                Row := FRP^.eRow;
+
+                {find the best field}
+                if not FindBestFieldOnRow(Row, Col) then
+                  goto Retry2;
+              end;
+            end
+            else
+              WrapAtBottom;
+
+          ESleft,
+          ESwordLeft :
+            GotoPrevField;
+
+          ESbackTab,
+          ESprevField :
+            if IDisValid(PrevID) then
+              CurrentField := FindFieldID(ESR, PrevID)
+            else
+              GotoPrevField;
+
+          ESright,
+          ESwordRight :
+            GotoNextField;
+
+          EStab,
+          ESnextField :
+            if IDisValid(NextID) then
+              CurrentField := FindFieldID(ESR, NextID)
+            else
+              GotoNextField;
+
+          ESfirstFld :
+            SeekToFirst;
+
+          ESlastFld :
+            SeekToLast;
+
+          ESpageUp :
+            PageUpOrDown(-1);
+
+          ESpageDown :
+            PageUpOrDown(1);
+
+          {$IFDEF UseMouse}
+          ESmouse :             {new field was selected by the mouse}
+            {ID of new field is in CurrentField^.NewFieldID}
+            FRP := FindFieldID(ESR, NewFieldID);
+          {$ENDIF}
+        end;
+
+      if FRP = nil then
+        EvaluateESCommand := CurrentField
+      else
+        EvaluateESCommand := FRP;
+      CurrentField := SaveCurrentField; {!!.08}
+    end;
+  end;
+
+

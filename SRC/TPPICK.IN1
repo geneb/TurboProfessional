@@ -1,0 +1,907 @@
+  function GetString(Item : Word) : String;
+    {-Return the name of each pick item}
+  inline($FF/$1E/>PickFunc);      {CALL DWORD PTR [>PickFunc]}
+
+  function CurrentChoice(FirstChoice, Row, Col : Word) : Word;
+    {-Return current choice given FirstChoice, Row, Col}
+  inline($FF/$1E/>ChoiceFunc);    {CALL DWORD PTR [>ChoiceFunc]}
+
+  procedure SetGlobalRowCol(Choice, FirstChoice : Word);
+    {-Set valid gChoice, gFirstChoice, gRow, gCol given Choice and FirstChoice}
+  inline($FF/$1E/>RowColProc);    {CALL DWORD PTR [>RowColProc]}
+
+  procedure MoveUserProc(Item : Word);
+    {-Allow user to do something at each pick movement}
+  inline($FF/$1E/>PickUserPtr);   {CALL DWORD PTR [>PickUserPtr]}
+
+  procedure HelpProc(HelpFor : Byte; IDPtr : Pointer; HelpIndex : Word);
+    {-Allow user to provide help for item}
+  inline($FF/$1E/>PickHelpPtr);   {CALL DWORD PTR [>PickHelpPtr]}
+
+  function SearchFunc(PickChar : Char; var Item : Word) : Boolean;
+    {-Called to search for item using alphanumeric character}
+  inline($FF/$1E/>PickSrchPtr);   {CALL DWORD PTR [>PickSrchPtr]}
+
+  {$IFDEF UseMouse}
+  function SliderPos : Byte;
+    {-Calculate the mouse slider position in absolute coordinates}
+  inline($FF/$1E/>SliderFunc);    {CALL DWORD PTR [>SliderFunc]}
+
+  procedure ScrollMouse(RelPos : Byte);
+    {-Scroll current position according to RelPos}
+  inline($FF/$1E/>ScrollProc);    {CALL DWORD PTR [>ScrollProc]}
+  {$ENDIF}
+
+  procedure PickMovePrim(Proc : Pointer);
+    {-Call a primitive pick movement routine}
+  inline(
+    $89/$E3/               {mov bx,sp}
+    $36/$FF/$1F/           {call dword ptr ss:[bx]}
+    $83/$C4/$04);          {add sp,4} {!!.11}
+
+  procedure PickMove(PMove : PickMoveType);
+    {-Call a primitive pick movement type}
+  begin
+    PickMovePrim(PickMovePtr[PMove]);
+  end;
+
+  procedure SavePickState(var P : PickStateRec);
+    {-Save current pick state to P}
+  begin
+    with P do begin
+      sPickMinRows := PickMinRows;
+      sPickMaxRows := PickMaxRows;
+      sPickMatrix := PickMatrix;
+      sPickStick := PickStick;
+      sPickMore := PickMore;
+      sPickAlterPageRow := PickAlterPageRow;
+      sPickSrch := PickSrch;
+      sSrchStart := SrchStart;
+      sPickSrchStat := PickSrchStat;
+      sHideCursor := HideCursor;
+      sAltPickAttr := AltPickAttr;
+      sPickFunc := PickFunc;
+      sChoiceFunc := ChoiceFunc;
+      sRowColProc := RowColProc;
+      sPickOrient := PickOrient;
+      sPickColors := PickColors;
+      sgFirstChoice := gFirstChoice;
+      sgChoice := gChoice;
+      sgRow := gRow;
+      sgCol := gCol;
+      sX1 := X1;
+      sY1 := Y1;
+      sXSize := XSize;
+      sYSize := YSize;
+      sgNumItems := gNumItems;
+      sItemWidth := ItemWidth;
+      sItemRows := ItemRows;
+      sMaxFirstChoice := MaxFirstChoice;
+      sYMesg := YMesg;
+      sXMore := XMore;
+      sHasMore := HasMore;
+      sMoreSpace := MoreSpace;
+      sPickIsFramed := PickIsFramed;
+      sItemWrap := ItemWrap;
+      sHorizChar := HorizChar;
+      sVertChar := VertChar;
+      sPickMovePtr := PickMovePtr;
+      sgChangeAmount := gChangeAmount;
+      {$IFDEF UseMouse}
+      sMouseScroll := MouseScroll;
+      sPickMouseScroll := PickMouseScroll;
+      sPickMousePage := PickMousePage;
+      sPickMouseEnabled := PickMouseEnabled;
+      sSliderFunc := SliderFunc;
+      sScrollProc := ScrollProc;
+      sPrevSlid := PrevSlid; {!!.12}
+      sPickMouseWindow := PickMouseWindow; {!!.21}
+      {$ENDIF}
+      {$IFDEF PickItemDisable}
+      sPickable := Pickable;
+      {$ENDIF}
+    end;
+  end;
+
+  procedure RestorePickState(var P : PickStateRec);
+    {-Restore current pick state from P}
+  begin
+    with P do begin
+      PickMinRows := sPickMinRows;
+      PickMaxRows := sPickMaxRows;
+      PickMatrix := sPickMatrix;
+      PickStick := sPickStick;
+      PickMore := sPickMore;
+      PickAlterPageRow := sPickAlterPageRow;
+      PickSrch := sPickSrch;
+      SrchStart := sSrchStart;
+      PickSrchStat := sPickSrchStat;
+      HideCursor := sHideCursor;
+      AltPickAttr := sAltPickAttr;
+      PickFunc := sPickFunc;
+      ChoiceFunc := sChoiceFunc;
+      RowColProc := sRowColProc;
+      PickOrient := sPickOrient;
+      PickColors := sPickColors;
+      gFirstChoice := sgFirstChoice;
+      gChoice := sgChoice;
+      gRow := sgRow;
+      gCol := sgCol;
+      X1 := sX1;
+      Y1 := sY1;
+      XSize := sXSize;
+      YSize := sYSize;
+      gNumItems := sgNumItems;
+      ItemWidth := sItemWidth;
+      ItemRows := sItemRows;
+      MaxFirstChoice := sMaxFirstChoice;
+      YMesg := sYMesg;
+      XMore := sXMore;
+      HasMore := sHasMore;
+      MoreSpace := sMoreSpace;
+      PickIsFramed := sPickIsFramed;
+      ItemWrap := sItemWrap;
+      HorizChar := sHorizChar;
+      VertChar := sVertChar;
+      PickMovePtr := sPickMovePtr;
+      gChangeAmount := sgChangeAmount;
+      {$IFDEF UseMouse}
+      MouseScroll := sMouseScroll;
+      PickMouseScroll := sPickMouseScroll;
+      PickMousePage := sPickMousePage;
+      PickMouseEnabled := sPickMouseEnabled;
+      SliderFunc := sSliderFunc;
+      ScrollProc := sScrollProc;
+      PrevSlid := sPrevSlid; {!!.12}
+      PickMouseWindow := sPickMouseWindow; {!!.21}
+      {$ENDIF}
+      {$IFDEF PickItemDisable}
+      Pickable := sPickable;
+      {$ENDIF}
+    end;
+  end;
+
+  {$IFDEF EnablePickOrientations}
+  function PickOrientation : PickOrientType;
+    {-Return the current pick orientation}
+  begin
+    PickOrientation := PickOrient;
+  end;
+  {$ENDIF}
+
+  procedure Lower(var Source : Word; MaxVal : Word);
+    {-Reduce Source to at most MaxVal}
+  begin
+    if Source > MaxVal then
+      Source := MaxVal;
+  end;
+
+  procedure Decrease(var Source : Word; Amount, MinVal : Word);
+    {-Decrease Source by Amount, but no lower than MinVal}
+  begin
+    if Source > MinVal+Amount then
+      Dec(Source, Amount)
+    else
+      Source := MinVal;
+  end;
+
+  procedure Raise(var Source : Word; MinVal : Word);
+    {-Increase Source to at least MinVal}
+  begin
+    if Source < MinVal then
+      Source := MinVal;
+  end;
+
+  procedure Increase(var Source : Word; Amount, MaxVal : Word);
+    {-Increase Source by Amount, but no higher than MaxVal}
+  begin
+    if Source+Amount < MaxVal then
+      Inc(Source, Amount)
+    else
+      Source := MaxVal;
+  end;
+
+  {$IFDEF PickItemDisable}
+  function UnPickable(ItemNum : Word) : Boolean;
+    {-Return true if an item cannot be picked}
+  var
+    S : String;
+  begin
+    if ItemNum <= gNumItems then
+      S := GetString(ItemNum);
+    UnPickable := not Pickable;
+    Pickable := True;
+    AltPickAttr := False;
+    PrivatePick := False;
+  end;
+
+  procedure GetPickableChoice(Cmd : PKType);
+    {-Increment choice number until a pickable item is found}
+  var
+    NoChoices : Word;
+  begin
+    NoChoices := gChoice;
+    repeat
+      case Cmd of
+        PKSDown, PKSPgDn, PKSRight, PKSEnd :
+          begin
+            Dec(gChoice);
+            if gChoice < 1 then
+              gChoice := gNumItems;
+          end;
+      else
+        Inc(gChoice);
+        if gChoice > gNumItems then
+          gChoice := 1;
+      end;
+    until not UnPickable(gChoice) or (gChoice = NoChoices);
+    if gChoice <> NoChoices then  {!!.13}
+      SetGlobalRowCol(gChoice, gFirstChoice);
+  end;
+  {$ENDIF}
+
+  {---------------------- Movement Primitives ----------------------}
+
+  procedure CommonValidation;
+    {-Perform choice validation common to all orientations}
+  begin
+    if (gChoice < 1) or (gChoice > gNumItems) then begin
+      gChoice := 1;
+      gFirstChoice := 1;
+    end;
+    {$IFDEF PickItemDisable}
+    if UnPickable(gChoice) then
+      GetPickableChoice(PKSNone);
+    {$ENDIF}
+    Raise(gFirstChoice, 1);
+    Lower(gFirstChoice, gChoice);
+  end;
+
+  function ValidPos(Row, Col : Word) : Boolean;
+    {-Return true if <gFirstChoice, Row, Col> indicates a valid item}
+  begin
+    ValidPos := (CurrentChoice(gFirstChoice, Row, Col) <= gNumItems);
+  end;
+
+  procedure ValidateChoiceColFirst;
+    {-Assure implied choice is within range}
+  begin
+    while not ValidPos(gRow, gCol) do
+      if gCol > 1 then
+        Dec(gCol)
+      else begin
+        gCol := PickMatrix;
+        Dec(gRow);
+      end;
+  end;
+
+  procedure ValidateChoiceRowFirst;
+    {-Assure implied choice is within range}
+  begin
+    while not ValidPos(gRow, gCol) do
+      if gRow > 1 then
+        Dec(gRow)
+      else begin
+        Dec(gCol);
+        gRow := YSize;
+      end;
+  end;
+
+  procedure SetUpperLeft;
+    {-Set cursor to upper left corner of window}
+  begin
+    gRow := 1;
+    gCol := 1;
+  end;
+
+  procedure SetLowerRight;
+    {-Set cursor to lower right corner of window}
+  begin
+    gRow := YSize;
+    gCol := PickMatrix;
+  end;
+
+  procedure ShiftColumnLeft;
+    {-gRow should be 1 when this is called}
+  begin
+    if gCol > 1 then
+      Dec(gCol)
+    else
+      gCol := PickMatrix;
+    gRow := YSize;
+  end;
+
+  procedure ShiftColumnRight;
+    {-gRow should be YSize when this is called}
+  begin
+    if (gCol < PickMatrix) and ValidPos(1, gCol+1) then
+      Inc(gCol)
+    else
+      gCol := 1;
+    gRow := 1;
+  end;
+
+  procedure ShiftRowUp;
+    {-gCol should be 1 when this is called}
+  begin
+    if gRow > 1 then
+      Dec(gRow)
+    else
+      gRow := YSize;
+    gCol := PickMatrix;
+    ValidateChoiceColFirst;
+  end;
+
+  procedure ShiftRowDown;
+    {-gCol should be PickMatrix when this is called}
+  begin
+    if (gRow < YSize) and ValidPos(gRow+1, 1) then
+      Inc(gRow)
+    else
+      gRow := 1;
+    gCol := 1;
+  end;
+
+  procedure LowerFirstChoice;
+    {-Reduce the first choice or wrap}
+  begin
+    if gFirstChoice > 1 then
+      Decrease(gFirstChoice, gChangeAmount, 1)
+    else if ItemWrap then
+      gFirstChoice := MaxFirstChoice;
+  end;
+
+  procedure RaiseFirstChoice;
+    {-Increase the first choice or wrap}
+  begin
+    if gFirstChoice < MaxFirstChoice then
+      Increase(gFirstChoice, gChangeAmount, MaxFirstChoice)
+    else if ItemWrap then
+      gFirstChoice := 1;
+  end;
+
+  procedure LeftShift;
+    {-Left arrow on upper left corner}
+  begin
+    if gFirstChoice > 1 then
+      gCol := PickMatrix;
+    LowerFirstChoice;
+    if ItemWrap and (gFirstChoice = MaxFirstChoice) then
+      ShiftRowUp;
+  end;
+
+  procedure RightShift;
+    {-Right arrow on lower right corner}
+  begin
+    if gFirstChoice < MaxFirstChoice then
+      gCol := 1;
+    RaiseFirstChoice;
+    if ItemWrap and (gFirstChoice = 1) then
+      ShiftRowDown;
+  end;
+
+  procedure UpShift;
+    {-Up arrow on upper edge of vertical pick}
+  begin
+    LowerFirstChoice;
+    if ItemWrap and (gFirstChoice = MaxFirstChoice) then
+      ShiftColumnLeft;
+  end;
+
+  procedure DownShift;
+    {-Down arrow on lower edge of vertical pick}
+  begin
+    RaiseFirstChoice;
+    if ItemWrap and (gFirstChoice = 1) then
+      ShiftColumnRight;
+  end;
+
+  procedure PgUpNormal;
+    {-PgUp for vertical and horizontal pick}
+  begin
+    if gFirstChoice > 1 then begin
+      if PickAlterPageRow then begin
+        Decrease(gFirstChoice, (YSize-(gRow-1))*gChangeAmount, 1);
+        gRow := 1;
+      end else
+        Decrease(gFirstChoice, YSize*gChangeAmount, 1);
+    end else if gRow > 1 then
+      gRow := 1
+    else if ItemWrap then begin
+      {Wrap to previous column}
+      gFirstChoice := MaxFirstChoice;
+      gRow := YSize;
+      if gCol > 1 then
+        Dec(gCol)
+      else
+        gCol := PickMatrix;
+    end;
+  end;
+
+  procedure PgDnNormal;
+    {-PgDn for vertical and horizontal pick}
+  begin
+    if gFirstChoice < MaxFirstChoice then begin
+      if PickAlterPageRow then begin
+        Increase(gFirstChoice, gRow*gChangeAmount, MaxFirstChoice);
+        gRow := YSize;
+      end else
+        Increase(gFirstChoice, YSize*gChangeAmount, MaxFirstChoice);
+    end else if (gRow < YSize) and ValidPos(gRow+1, gCol) then
+      gRow := YSize
+    else if ItemWrap then begin
+      gFirstChoice := 1;
+      gRow := 1;
+      if (gCol < PickMatrix) and ValidPos(gRow, gCol+1) then
+        Inc(gCol)
+      else
+        gCol := 1;
+    end;
+  end;
+
+  {$IFDEF EnablePickOrientations}
+  procedure LeftSnake;
+    {-Left arrow in upper left corner of snake pick}
+  begin
+    LowerFirstChoice;
+    if ItemWrap and (gFirstChoice = MaxFirstChoice) then begin
+      ShiftRowUp;
+      gFirstChoice := 1;
+    end;
+  end;
+
+  procedure RightSnake;
+    {-Right arrow in lower right corner of snake pick}
+  begin
+    RaiseFirstChoice;
+    if ItemWrap and (gFirstChoice = 1) then begin
+      ShiftRowDown;
+      gFirstChoice := MaxFirstChoice;
+    end;
+  end;
+
+  procedure DownSnake;
+    {-Down arrow in lower right corner of snake pick}
+  begin
+    if gFirstChoice < MaxFirstChoice then begin               {!!.09}
+      Increase(gFirstChoice, gChangeAmount, MaxFirstChoice);  {!!.09}
+      gRow := 1;                                              {!!.09}
+    end else if ItemWrap then begin                           {!!.09}
+      gFirstChoice := 1;                                      {!!.09}
+      gCol := 1;                                              {!!.09}
+      gRow := 1;                                              {!!.09}
+    end;                                                      {!!.09}
+  end;
+
+  procedure UpSnake;
+    {-Up arrow in upper left corner of snake pick}
+  begin
+    if ItemWrap or (gFirstChoice > 1) then begin
+      gRow := YSize;
+      if ItemWrap then
+        gCol := PickMatrix;
+    end;
+    LowerFirstChoice;
+  end;
+
+  procedure PgUpSnake;
+    {-Page up movement for snaking pick}
+  var
+    NotUpperLeft : Boolean;
+  begin
+    NotUpperLeft := (gRow > 1) or (gCol > 1);
+    if PickAlterPageRow and NotUpperLeft then
+      SetUpperLeft
+    else if gFirstChoice > 1 then begin
+      Decrease(gFirstChoice, YSize*PickMatrix, 1);
+      if PickAlterPageRow then
+        SetUpperLeft;
+    end else if not PickAlterPageRow and NotUpperLeft then
+      SetUpperLeft
+    else if ItemWrap then begin
+      gFirstChoice := MaxFirstChoice;
+      SetLowerRight;
+    end;
+  end;
+
+  procedure PgDnSnake;
+    {-Page down movement for snaking pick}
+  var
+    NotLowerRight : Boolean;
+  begin
+    if gRow < YSize then
+      NotLowerRight := ValidPos(gRow+1, gCol)
+    else if gCol < PickMatrix then
+      NotLowerRight := ValidPos(gRow, gCol+1)
+    else
+      NotLowerRight := False;
+
+    if PickAlterPageRow and NotLowerRight then
+      SetLowerRight
+    else if gFirstChoice < MaxFirstChoice then begin
+      Increase(gFirstChoice, YSize*PickMatrix, MaxFirstChoice);
+      if PickAlterPageRow then
+        SetLowerRight;
+    end else if not PickAlterPageRow and NotLowerRight then
+      SetLowerRight
+    else if ItemWrap then begin
+      gFirstChoice := 1;
+      SetUpperLeft;
+    end;
+  end;
+  {$ENDIF}
+
+  procedure EvaluateCommand(Cmd : PKType);
+    {-Evaluate keyboard command to return new pick state}
+  begin
+    case Cmd of
+      PKSUp :                     {Up}
+        if gRow > 1 then
+          Dec(gRow)
+        else if gCol = 1 then
+          PickMove(UpLeft)
+        else if gCol = PickMatrix then
+          PickMove(UpRight)
+        else
+          PickMove(UpMiddle);
+
+      PKSDown :                   {Down}
+        if (gRow < YSize) and ValidPos(gRow+1, gCol) then
+          Inc(gRow)
+        else if gCol = PickMatrix then {!!}
+          PickMove(DownRight)
+        else if gCol = 1 then
+          PickMove(DownLeft)
+        else
+          PickMove(DownMiddle);
+
+      PKSLeft :                   {Left}
+        if gCol > 1 then
+          Dec(gCol)
+        else if gRow = 1 then
+          PickMove(LeftTop)
+        else if gRow = YSize then
+          PickMove(LeftBottom)
+        else
+          PickMove(LeftMiddle);
+
+      PKSRight :                  {Right}
+        if (gCol < PickMatrix) and ValidPos(gRow, gCol+1) then
+          Inc(gCol)
+        else if gRow = YSize then {!!}
+          PickMove(RightBottom)
+        else if gRow = 1 then
+          PickMove(RightTop)
+        else
+          PickMove(RightMiddle);
+
+      PKSPgUp :                   {PgUp}
+        PickMove(PgUp);
+
+      PKSPgDn :                   {PgDn}
+        PickMove(PgDn);
+
+      PKSHome :                   {Home}
+        begin
+          gFirstChoice := 1;
+          SetUpperLeft;
+        end;
+
+      PKSEnd :                    {End}
+        begin
+          gFirstChoice := MaxFirstChoice;
+          SetLowerRight;
+        end;
+
+    end;
+    ValidateChoiceRowFirst;
+    gChoice := CurrentChoice(gFirstChoice, gRow, gCol);
+  end;
+
+  {---------------------- Vertical Orientation ----------------------}
+
+  function PickChoiceVert(FirstChoice, Row, Col : Word) : Word;
+    {-Return item number given FirstChoice, Row, Col}
+  begin
+    PickChoiceVert := (Col-1)*ItemRows+FirstChoice+(Row-1);
+  end;
+
+  procedure RowColVert(Choice, FirstChoice : Word);
+    {-Set valid <gFirstChoice, gRow, gCol> given Choice and FirstChoice}
+  var
+    RowBase : Word;
+  begin
+    gChoice := Choice;
+    gFirstChoice := FirstChoice;
+    CommonValidation;
+
+    {Force gFirstChoice into a valid range}
+    gFirstChoice := ((gFirstChoice-1) mod ItemRows)+1;
+    Lower(gFirstChoice, ItemRows-YSize+1);
+
+    {Assure gFirstChoice is in a range to make gChoice visible}
+    RowBase := ((gChoice-1) mod ItemRows)+1;
+    if gFirstChoice > RowBase then
+      gFirstChoice := RowBase
+    else if gFirstChoice+YSize <= RowBase then
+      gFirstChoice := RowBase-YSize+1;
+
+    {Compute the row and column}
+    gRow := RowBase-gFirstChoice+1;
+    gCol := ((gChoice-RowBase) div ItemRows)+1;
+  end;
+
+  {$IFDEF UseMouse}
+  function SlideVert : Byte;
+    {-Calculate the mouse slider position in absolute coordinates}
+  begin
+    if ItemRows <= 1 then
+      SlideVert := Y1
+    else
+      SlideVert := Y1+(LongInt(gFirstChoice+gRow-2)*(YSize-1)) div (ItemRows-1); {!!.07}
+  end;
+
+  procedure ScrollVert(RelPos : Byte);
+    {-Scroll highlight according to mouse cursor position}
+  begin
+    if YSize > 1 then begin
+      gFirstChoice := 1+((LongInt(RelPos)*(ItemRows-1)) div (YSize-1)); {!!.07}
+      Lower(gFirstChoice, MaxFirstChoice);
+      if gFirstChoice = 1 then
+        gRow := 1;
+      while (SlideVert-Y1 < RelPos) and (gChoice < gNumItems) do
+        EvaluateCommand(PKSDown);
+      while (SlideVert-Y1 > RelPos) and (gChoice > 1) do
+        EvaluateCommand(PKSUp);
+      ValidateChoiceRowFirst;
+    end;
+  end;
+  {$ENDIF}
+
+  procedure SetVerticalPick;
+    {-Assign procedure pointers for vertical picking}
+  begin
+    PickOrient := PickVertical;
+    ChoiceFunc := @PickChoiceVert;
+    RowColProc := @RowColVert;
+    {$IFDEF UseMouse}
+    SliderFunc := @SlideVert;
+    ScrollProc := @ScrollVert;
+    {$ENDIF}
+    PickMovePtr[UpLeft] := @UpShift;
+    PickMovePtr[UpMiddle] := @UpShift;
+    PickMovePtr[UpRight] := @UpShift;
+    PickMovePtr[DownLeft] := @DownShift;
+    PickMovePtr[DownMiddle] := @DownShift;
+    PickMovePtr[DownRight] := @DownShift;
+    PickMovePtr[LeftTop] := @LeftShift;
+    PickMovePtr[LeftMiddle] := @ShiftRowUp;
+    PickMovePtr[LeftBottom] := @ShiftRowUp;
+    PickMovePtr[RightTop] := @ShiftRowDown;
+    PickMovePtr[RightMiddle] := @ShiftRowDown;
+    PickMovePtr[RightBottom] := @RightShift;
+    PickMovePtr[PgUp] := @PgUpNormal;
+    PickMovePtr[PgDn] := @PgDnNormal;
+  end;
+
+  procedure InitPickVert;
+    {-Initialize pick variables specific to vertical picking}
+  begin
+    {MaxFirstChoice controls how much scrolling, if any, is possible}
+    MaxFirstChoice := ItemRows-YSize+1;
+
+    {Amount to change gFirstChoice by when scrolling}
+    gChangeAmount := 1;
+
+    {Set proper characters for "more" prompt}
+    UpArr[True] := ^X;
+    DnArr[True] := ^Y;
+  end;
+
+  {$IFDEF EnablePickOrientations}
+  {---------------------- Horizontal Orientation ----------------------}
+
+  function PickChoiceHoriz(FirstChoice, Row, Col : Word) : Word;
+    {-Return item number given FirstChoice, Row, Col}
+  begin
+    PickChoiceHoriz := (Row-1)*PickMatrix+FirstChoice+(Col-1);
+  end;
+
+  procedure RowColHoriz(Choice, FirstChoice : Word);
+    {-Return valid <gChoice, gFirstChoice, gRow, gCol> given Choice and FirstChoice}
+  begin
+    gChoice := Choice;
+    gFirstChoice := FirstChoice;
+    CommonValidation;
+
+    {Make gFirstChoice a valid multiple of PickMatrix}
+    Dec(gFirstChoice, (gFirstChoice-1) mod PickMatrix);
+
+    {Assure gFirstChoice is large enough to make gChoice visible}
+    if gFirstChoice+YSize*PickMatrix <= gChoice then
+      gFirstChoice := gChoice-((gChoice-1) mod PickMatrix);
+
+    {Assure gFirstChoice is small enough to fill the window with choices}
+    while ((gFirstChoice > PickMatrix) and
+           (gFirstChoice+PickMatrix*(YSize-1) > gNumItems)) do
+      Dec(gFirstChoice, PickMatrix);
+
+    {Compute the row and column}
+    gRow := ((gChoice-gFirstChoice) div PickMatrix)+1;
+    gCol := ((gChoice-1) mod PickMatrix)+1;
+  end;
+
+  {$IFDEF UseMouse}
+  function SlideHoriz : Byte;
+    {-Calculate the mouse slider position in absolute coordinates}
+  begin
+    if gNumItems <= 1 then
+      SlideHoriz := Y1
+    else
+      SlideHoriz := Y1+(LongInt(gChoice-1)*(YSize-1)) div (gNumItems-1); {!!.07}
+  end;
+
+  procedure ScrollHoriz(RelPos : Byte);
+    {-Scroll current position according to mouse}
+  begin
+    if YSize > 1 then begin
+      gFirstChoice := 1+((LongInt(RelPos)*(gNumItems-1)) div (YSize-1)); {!!.07}
+      Lower(gFirstChoice, MaxFirstChoice);
+      if gFirstChoice = 1 then
+        SetUpperLeft;
+      gChoice := PickChoiceHoriz(gFirstChoice, gRow, gCol);
+      while (SlideHoriz-Y1 < RelPos) and (gChoice < gNumItems) do
+        EvaluateCommand(PKSRight);
+      while (SlideHoriz-Y1 > RelPos) and (gChoice > 1) do
+        EvaluateCommand(PKSLeft);
+      ValidateChoiceColFirst;
+    end;
+  end;
+  {$ENDIF}
+
+  procedure SetHorizontalPick;
+    {-Set procedure pointers for horizontal picking}
+  begin
+    PickOrient := PickHorizontal;
+    ChoiceFunc := @PickChoiceHoriz;
+    RowColProc := @RowColHoriz;
+    {$IFDEF UseMouse}
+    SliderFunc := @SlideHoriz;
+    ScrollProc := @ScrollHoriz;
+    {$ENDIF}
+    PickMovePtr[UpLeft] := @UpShift;
+    PickMovePtr[UpMiddle] := @UpShift;
+    PickMovePtr[UpRight] := @UpShift;
+    PickMovePtr[DownLeft] := @DownShift;
+    PickMovePtr[DownMiddle] := @DownShift;
+    PickMovePtr[DownRight] := @DownShift;
+    PickMovePtr[LeftTop] := @LeftShift;
+    PickMovePtr[LeftMiddle] := @ShiftRowUp;
+    PickMovePtr[LeftBottom] := @ShiftRowUp;
+    PickMovePtr[RightTop] := @ShiftRowDown;
+    PickMovePtr[RightMiddle] := @ShiftRowDown;
+    PickMovePtr[RightBottom] := @RightShift;
+    PickMovePtr[PgUp] := @PgUpNormal;
+    PickMovePtr[PgDn] := @PgDnNormal;
+  end;
+
+  procedure InitPickHoriz;
+    {-Initialize pick variables specific to horizontal picking}
+  begin
+    {MaxFirstChoice controls how much scrolling, if any, is possible}
+    MaxFirstChoice := (ItemRows-YSize)*PickMatrix+1;
+
+    {Amount to change gFirstChoice by when scrolling}
+    gChangeAmount := PickMatrix;
+
+    {Set proper characters for "more" prompt}
+    UpArr[True] := ^X;
+    DnArr[True] := ^Y;
+  end;
+
+  {---------------------- Snaky Orientation ----------------------}
+
+  function PickChoiceSnake(FirstChoice, Row, Col : Word) : Word;
+    {-Return item number given FirstChoice, Row, Col}
+  begin
+    PickChoiceSnake := (Col-1)*YSize+FirstChoice+(Row-1);
+  end;
+
+  procedure RowColSnake(Choice, FirstChoice : Word);
+    {-Return valid <FirstChoice, Row, Col> given Choice and FirstChoice}
+  var
+    LeftOver : Word;
+  begin
+    gChoice := Choice;
+    gFirstChoice := FirstChoice;
+    CommonValidation;
+    if gFirstChoice+YSize*PickMatrix <= gChoice then begin
+      gFirstChoice := gChoice-YSize*PickMatrix+1;
+      LeftOver := (gFirstChoice-1) mod YSize;
+      if LeftOver <> 0 then
+        Inc(gFirstChoice, YSize-LeftOver);
+    end;
+
+    gRow := ((gChoice-gFirstChoice) mod YSize)+1;
+    gCol := ((gChoice-gFirstChoice) div YSize)+1;
+  end;
+
+  {$IFDEF UseMouse}
+  function SlideSnake : Byte;
+    {-Calculate the mouse slider position in absolute coordinates}
+  begin
+    if gNumItems <= 1 then
+      SlideSnake := Y1
+    else
+      SlideSnake := Y1+(LongInt(gChoice-1)*(YSize-1)) div (gNumItems-1); {!!.07}
+  end;
+
+  procedure ScrollSnake(RelPos : Byte);
+    {-Scroll current position according to mouse}
+  begin
+    if YSize > 1 then begin
+      gFirstChoice := 1+((LongInt(RelPos)*(gNumItems-1)) div (YSize-1)); {!!.07}
+      Lower(gFirstChoice, MaxFirstChoice);
+      if gFirstChoice = 1 then
+        SetUpperLeft;
+      gChoice := PickChoiceSnake(gFirstChoice, gRow, gCol);
+      while (SlideHoriz-Y1 < RelPos) and (gChoice < gNumItems) do
+        EvaluateCommand(PKSDown);
+      while (SlideHoriz-Y1 > RelPos) and (gChoice > 1) do
+        EvaluateCommand(PKSUp);
+      ValidateChoiceRowFirst;
+    end;
+  end;
+  {$ENDIF}
+
+  procedure SetSnakingPick;
+    {-Set procedure pointers for snaking pick}
+  begin
+    PickOrient := PickSnaking;
+    ChoiceFunc := @PickChoiceSnake;
+    RowColProc := @RowColSnake;
+    {$IFDEF UseMouse}
+    SliderFunc := @SlideSnake;
+    ScrollProc := @ScrollSnake;
+    {$ENDIF}
+    PickMovePtr[UpLeft] := @UpSnake;
+    PickMovePtr[UpMiddle] := @ShiftColumnLeft;
+    PickMovePtr[UpRight] := @ShiftColumnLeft;
+    PickMovePtr[DownLeft] := @ShiftColumnRight;
+    PickMovePtr[DownMiddle] := @ShiftColumnRight;
+    PickMovePtr[DownRight] := @DownSnake;
+    PickMovePtr[LeftTop] := @LeftSnake;
+    PickMovePtr[LeftMiddle] := @LeftSnake;
+    PickMovePtr[LeftBottom] := @LeftSnake;
+    PickMovePtr[RightTop] := @RightSnake;
+    PickMovePtr[RightMiddle] := @RightSnake;
+    PickMovePtr[RightBottom] := @RightSnake;
+    PickMovePtr[PgUp] := @PgUpSnake;
+    PickMovePtr[PgDn] := @PgDnSnake;
+  end;
+
+  procedure InitPickSnake;
+    {-Initialize pick variables specific to snaky picking}
+  var
+    LeftOver : Word;
+  begin
+    {MaxFirstChoice controls how much scrolling, if any, is possible}
+    if gNumItems <= YSize*PickMatrix then
+      MaxFirstChoice := 1
+    else begin
+      MaxFirstChoice := gNumItems-YSize*PickMatrix+1;
+      LeftOver := gNumItems mod YSize;
+      if LeftOver <> 0 then
+        Inc(MaxFirstChoice, YSize-LeftOver);
+    end;
+
+    {Amount to change gFirstChoice by when scrolling}
+    gChangeAmount := YSize;
+
+    {Set proper characters for "more" prompt}
+    UpArr[True] := ^[;
+    DnArr[True] := ^Z;
+  end;
+
+  {$ENDIF} {of IFDEF EnablePickOrientations}
+

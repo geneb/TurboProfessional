@@ -1,0 +1,48 @@
+This file summarizes changes made between Turbo Professional versions
+5.21 and 5.22. It is of interest primarily to Fast Update Plan
+subscribers.
+
+The primary reason for the release of Turbo Professional 5.22 is to
+bring the software in line with the new Second Edition Turbo
+Professional manual. The new manual incorporates all of the
+information previously found in the READ.ME file and auxiliary DOC
+files. See READ.ME for more information about obtaining the new
+manual.
+
+Bugs Fixed
+---------------------------------------------------------------------
+TPCRT
+  - ReadAttribute generated GPF in protected mode
+  - CtrlBreak didn't work in pmode
+
+TPDOS
+  - GetDiskClass - CDROM detection failed in pmode
+
+TPEDIT
+  - Referenced the absolute segment $40, not wise in pmode
+
+TPMACED
+  - Didn't work when window was greater than 80 columns
+  - Referenced the absolute segment $40, not wise in pmode
+
+TPMEMO
+  - Referenced the absolute segment $40, not wise in pmode
+
+TPMENU
+  - Disabled item colors were not mapped correctly
+
+TPMOUSE
+  - Save/RestoreMouseState weren't working in pmode
+
+TPSTRDEV
+  - Unit needed a {$C FIXED PRELOAD PERMANENT} declaration for pmode
+
+TPSTRING
+  - CompareLetterSets GPFed in pmode
+
+TPWINDOW
+  - MakeVScreen GPFed in pmode
+
+VBROWSE
+  - PageUp moved to top of file in files longer than 32K lines
+
