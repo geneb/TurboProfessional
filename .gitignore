@@ -1,3 +1,4 @@
+ignorecase = true
 # don't want to include any of the build artifacts.
 
 # Turbo Pascal Unit files
