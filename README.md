@@ -1,4 +1,4 @@
-# Turbo Power Professional v5.22
+# TurboPower Turbo Professional v5.22
 -------------------------------------------
 
 22 years ago, TurboPower Software closed their doors as a retail software company and released all of their development libraries the for Borland[1]/CodeGear/Embarcadero Delphi compiler.  These items were released under a Mozilla 1.1 license.
