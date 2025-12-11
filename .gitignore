@@ -2,12 +2,11 @@ ignorecase = true
 # don't want to include any of the build artifacts or
 # IDE config (.cfg) files.
 
-# Turbo Pascal Unit files
-src/.tpu
-# Turbo Pascal Protected Mode unit files.
-src/.tpp
+src/*.tpu
+src/*.tpp
 #
-src/.obj
-src/.exe
-src/.com
-src/.cfg
+src/*.obj
+src/*.exe
+src/*.com
+src/tpc.cfg
+src/bpc.cfg
