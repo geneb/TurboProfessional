@@ -8,5 +8,6 @@ src/*.tpp
 src/*.obj
 src/*.exe
 src/*.com
+src/*.bak
 src/tpc.cfg
 src/bpc.cfg

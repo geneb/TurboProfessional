@@ -258,6 +258,9 @@ function AddBackSlash(DirName : string) : string;
 function CleanPathName(PathName : string) : string;
   {-Return a pathname cleaned up as DOS will do it}
 
+function CleanFileName(FileName : string) : string;
+  {-Return filename with at most 8 chars of name and 3 of extension}
+    
 function FullPathName(FName : string) : string;
   {-Given FName (known to exist), return a full pathname}
 

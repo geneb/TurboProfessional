@@ -15,7 +15,7 @@
 {This directive enables mouse support in several of the units, as well as in
  some of the demo programs}
 
-{$DEFINE UseMouse}
+{.$DEFINE UseMouse}
 
 {The following define controls whether items within a menu system can
  be temporarily disabled and re-enabled, and whether menus can be shadowed.
@@ -24,7 +24,7 @@
  arrays defined for each menu system -- the new color array requires two
  additional items.}
 
-{$DEFINE Tpro5Menu}
+{.$DEFINE Tpro5Menu}
 
 {If FourByteDates is defined, dates in TPDATE are stored as longints, giving a
 range of 01/01/1600-12/31/3999. If it isn't defined, dates are stored as
@@ -34,7 +34,7 @@ FourByteDates was NOT defined. If you have been using word-sized dates with a
 version of Turbo Professional prior to 5.09, please be sure to read the
 discussion of this problem in the READ.ME file.}
 
-{$DEFINE FourByteDates}
+{.$DEFINE FourByteDates}
 
 {Disable the following define if you never need to display directories (using
  TPDIR) with file size, date and time. Doing so reduces the final application
@@ -44,11 +44,11 @@ discussion of this problem in the READ.ME file.}
 
 {The following directive enables numeric (right-to-left) editor in TPENTRY}
 
-{$DEFINE IncludeNumeric}
+{.$DEFINE IncludeNumeric}
 
 {The following directive enables multiple choice fields in TPENTRY}
 
-{$DEFINE IncludeChoice}
+{.$DEFINE IncludeChoice}
 
 {The following directive enables support for BCD reals in TPENTRY}
 
@@ -60,11 +60,11 @@ discussion of this problem in the READ.ME file.}
  element size exceeding 4 bytes, FastDispose makes a significant difference
  in the speed of heap deallocation when the sort is finished.}
 
-{$DEFINE FastDispose}
+{.$DEFINE FastDispose}
 
 {if the following directive is defined, TPTSR tries to thwart SideKick}
 
-{$DEFINE ThwartSideKick}
+{.$DEFINE ThwartSideKick}
 
 {Deactivate the following define if exploding windows are not desired,
  in order to save up to 2200 bytes of code space.}
@@ -86,7 +86,7 @@ discussion of this problem in the READ.ME file.}
 
 {Activate the following define to allow alternate orientations in TPPICK}
 
-{.$DEFINE EnablePickOrientations}
+{$DEFINE EnablePickOrientations}
 
 {The following define controls how various TPRO units react to the heap
  changes of TP6 and later. There's no need for you to modify it.}
